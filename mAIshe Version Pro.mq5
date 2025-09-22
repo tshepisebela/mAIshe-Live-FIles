@@ -1,12 +1,13 @@
 //+------------------------------------------------------------------+
-//|  mAIshe V22.5 (Enhanced Ranging)                                 |
+//|  mAIshe V22.4 (Trend & Range Only)                               |
 //|                      Copyright 2025, The Pro Trader              |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, The Pro Trader"
 #property link      ""
-#property version   "22.5" // Version updated for enhanced ranging
+#property version   "22.4" // Version updated for warning fix
 #include <Trade/Trade.mqh>
 #include <Trade/AccountInfo.mqh>
+#include <Arrays/ArrayObj.mqh> // For sorting zones
 
 //--- CTrade & CAccountInfo instances
 CTrade trade;
@@ -180,40 +181,16 @@ struct ManagedPosition
    double            entryPrice;
    ENUM_MANAGE_PHASE managementPhase;
 };
-
-// --- [NEW] ENHANCED MarketRange Struct ---
 struct MarketRange
 {
    double high;
    double low;
    bool   isValid;
    bool   isConfirmed;
-   // --- Enhanced Touch Tracking ---
-   datetime resistanceTouchTimes[5]; // Store time of last 5 resistance touches
-   double   resistanceTouchPrices[5]; // Store price of last 5 resistance touches
-   int      resistanceTouches;
-   datetime supportTouchTimes[5];    // Store time of last 5 support touches
-   double   supportTouchPrices[5];   // Store price of last 5 support touches
-   int      supportTouches;
-   int      lastTouchType; // 1 for support, 2 for resistance
-
-   // Helper to reset the struct
-   void Reset()
-   {
-      high = 0;
-      low = 0;
-      isValid = false;
-      isConfirmed = false;
-      ArrayInitialize(resistanceTouchTimes, 0);
-      ArrayInitialize(resistanceTouchPrices, 0);
-      resistanceTouches = 0;
-      ArrayInitialize(supportTouchTimes, 0);
-      ArrayInitialize(supportTouchPrices, 0);
-      supportTouches = 0;
-      lastTouchType = 0;
-   }
+   int    supportTouches;
+   int    resistanceTouches;
+   int    lastTouchType;
 };
-
 
 //--- State Variables
 ManagedPosition ManagedPositions[];
@@ -341,37 +318,22 @@ void OnTick()
    if(EnableIchimokuBias){ datetime newIchiBarTime = (datetime)SeriesInfoInteger(_Symbol, BiasTimeframe, SERIES_LASTBAR_DATE); if(newIchiBarTime != lastBiasBarTime) { lastBiasBarTime = newIchiBarTime;
    AnalyzeIchimokuBias(); } }
      
-   // Always analyze HTF market structure for both strategies
    for(int i=0; i < ArraySize(HtfStates); i++){ datetime newHtfBarTime = (datetime)SeriesInfoInteger(_Symbol, HtfStates[i].timeframe, SERIES_LASTBAR_DATE);
    if(newHtfBarTime != HtfStates[i].lastBarTime) { HtfStates[i].lastBarTime = newHtfBarTime; AnalyzeHtfMarketStructure(HtfStates[i]); } }
    
-   // --- NEW: Identify and manage market regime (trending vs. ranging) on each new HTF bar ---
-   static datetime lastHtf1BarTime = 0;
-   datetime newHtf1BarTime = (datetime)SeriesInfoInteger(_Symbol, Htf1_Timeframe, SERIES_LASTBAR_DATE);
-   if(newHtf1BarTime != lastHtf1BarTime)
-   {
-       lastHtf1BarTime = newHtf1BarTime;
-       IdentifyMarketRegimeAndRange();
-   }
-
    // --- CORE LOGIC FLOW ---
-   if(CurrentMarketRegime == REGIME_RANGING && EnableRangingStrategy)
-   {
-       ExecuteRangingStrategy();
-   }
+   DetermineStrategyPriority();
+   if(HighestPrioritySetup == STRATEGY_RANGE && EnableRangingStrategy) ExecuteRangingStrategy();
 
-   // LTF logic for Trend-Following on each new LTF bar
    static datetime lastLtfBarTime = 0;
    datetime newLtfBarTime = (datetime)SeriesInfoInteger(_Symbol, _Period, SERIES_LASTBAR_DATE);
    if(newLtfBarTime != lastLtfBarTime)
    {
-       lastLtfBarTime = newLtfBarTime;
-       if(CurrentMarketRegime == REGIME_TRENDING && EnableTrendStrategy)
-       {
-           AnalyzeLtfTrendContinuation();
-       }
+      lastLtfBarTime = newLtfBarTime;
+      if(HighestPrioritySetup == STRATEGY_TREND && EnableTrendStrategy) AnalyzeLtfTrendContinuation();
    }
 }
+
 
 //+------------------------------------------------------------------+
 //| OnTradeTransaction                                               |
@@ -381,11 +343,12 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
                         const MqlTradeResult& result)
 {
    // This function can be used for custom logic after a trade transaction
+   // All SMC-related logic has been removed.
 }
 
 
 //+------------------------------------------------------------------+
-//| HELPER FUNCTIONS                                                 |
+//| HELPER FUNCTIONS (e.g. IsNewBar)                                 |
 //+------------------------------------------------------------------+
 bool IsNewBar(ENUM_TIMEFRAMES timeframe)
 {
@@ -405,6 +368,9 @@ bool IsNewBar(ENUM_TIMEFRAMES timeframe)
     return false;
 }
 
+// ----------------------------------------
+// Candle helpers
+// ----------------------------------------
 bool IsBullishCandle(MqlRates &r)
 {
    return (r.close > r.open);
@@ -416,7 +382,7 @@ bool IsBearishCandle(MqlRates &r)
 }
 
 //+------------------------------------------------------------------+
-//| STRATEGY LOGIC (Trend & Range)                                   |
+//| ORIGINAL EA LOGIC (Trend & Range)                                |
 //+------------------------------------------------------------------+
 void AnalyzeLtfTrendContinuation()
 { 
@@ -528,231 +494,29 @@ void AnalyzeHtfMarketStructure(TimeframeState &state){ MqlRates htf_rates[];
    } if(bar_curr.high > state.swingHighAnchor.price){ state.currentTrend = UP; state.swingLowAnchor = state.currentImpulseLow; state.currentImpulseHigh.price = bar_curr.high; state.currentImpulseHigh.time = bar_curr.time; state.currentState = TRACKING_IMPULSE; state.lastBmsTime=bar_curr.time;
    state.lastChochTime=bar_curr.time; } else if(bar_curr.low < state.currentImpulseLow.price){ state.swingHighAnchor = state.currentPullbackHigh; state.currentImpulseLow.price = bar_curr.low; state.currentImpulseLow.time = bar_curr.time; state.currentState = TRACKING_IMPULSE; state.lastBmsTime=bar_curr.time;
    } } } } }
-
-// --- [NEW] RANGING STRATEGY CORE LOGIC ---
-void IdentifyMarketRegimeAndRange()
-{
-    static datetime lastStructureChangeTime = 0;
-    TimeframeState htf1 = HtfStates[0];
-
-    // If a Change of Character (ChoCh) has occurred, the market might be entering a range.
-    if(htf1.lastChochTime > lastStructureChangeTime)
-    {
-        lastStructureChangeTime = htf1.lastChochTime;
-        Print("Potential trend change detected on HTF. Defining new market range.");
-        // Define the range based on the high/low of the impulse leg that was just broken.
-        DefineRange(htf1.swingHighAnchor.price, htf1.swingLowAnchor.price);
-        CurrentMarketRegime = REGIME_RANGING; // Switch regime
-    }
-
-    // If we are in a ranging regime, validate and update the range.
-    if(CurrentMarketRegime == REGIME_RANGING && CurrentHtf1Range.isValid)
-    {
-        MqlRates htf1_rates[];
-        if(CopyRates(_Symbol, Htf1_Timeframe, 0, 2, htf1_rates) >= 2)
-        {
-            ManageRangeValidation(htf1_rates);
-        }
-    }
-    
-    // Breakout Condition: If price breaks decisively out of a confirmed range, switch back to trending
-    if(CurrentHtf1Range.isConfirmed)
-    {
-        MqlRates htf1_rates[];
-        if(CopyRates(_Symbol, Htf1_Timeframe, 0, 1, htf1_rates) > 0)
-        {
-            double htf1_atr_buffer[];
-            double htf1_atr = 0;
-            if(CopyBuffer(htf1AtrHandle, 0, 0, 1, htf1_atr_buffer) > 0) htf1_atr = htf1_atr_buffer[0];
-
-            if(htf1_rates[0].close > CurrentHtf1Range.high + htf1_atr * 0.5 || htf1_rates[0].close < CurrentHtf1Range.low - htf1_atr * 0.5)
-            {
-                Print("Decisive breakout from range detected. Switching back to TRENDING mode.");
-                CurrentMarketRegime = REGIME_TRENDING;
-                CurrentHtf1Range.Reset(); // Invalidate the old range
-            }
-        }
-    }
-}
-
-void DefineRange(double high, double low)
-{
-   CurrentHtf1Range.Reset(); // Clear old data before defining a new range
-   
-   double rangeHeight = high - low;
-   double htf1_atr = 0;
-   double htf1_atr_buffer[];
-   if(CopyBuffer(htf1AtrHandle, 0, 1, 1, htf1_atr_buffer) > 0) htf1_atr = htf1_atr_buffer[0];
-   
-   if(Range_MaxHeightAtr > 0 && htf1_atr > 0 && (rangeHeight > htf1_atr * Range_MaxHeightAtr))
-   {
-      Print("Potential range is too large (", DoubleToString(rangeHeight, _Digits)," vs ATR*Multipler ", DoubleToString(htf1_atr * Range_MaxHeightAtr, _Digits),"). Staying in Trend mode.");
-      CurrentMarketRegime = REGIME_TRENDING;
-      return;
+void DefineRange(double high, double low){ double rangeHeight = high - low; double htf1_atr = 0;
+   double htf1_atr_buffer[]; if(CopyBuffer(htf1AtrHandle, 0, 1, 1, htf1_atr_buffer) > 0) htf1_atr = htf1_atr_buffer[0];
+   if(Range_MaxHeightAtr > 0 && htf1_atr > 0 && (rangeHeight > htf1_atr * Range_MaxHeightAtr)) return; CurrentMarketRegime = REGIME_RANGING; CurrentHtf1Range.high = high;
+   CurrentHtf1Range.low = low; CurrentHtf1Range.isValid = true; CurrentHtf1Range.isConfirmed = false; CurrentHtf1Range.resistanceTouches = 1; CurrentHtf1Range.supportTouches = 1; CurrentHtf1Range.lastTouchType = 1;
    }
-   
-   CurrentHtf1Range.high = high;
-   CurrentHtf1Range.low = low;
-   CurrentHtf1Range.isValid = true;
-   CurrentHtf1Range.isConfirmed = false;
-   CurrentHtf1Range.resistanceTouches = 1; // Initial high
-   CurrentHtf1Range.supportTouches = 1;   // Initial low
-   CurrentHtf1Range.lastTouchType = 0; // No new touches yet
-}
-
-void ManageRangeValidation(const MqlRates &htf1_rates[])
-{
-   if(EnableVolatilityEngine && CurrentVolatilityRegime >= VOL_HIGH)
-   {
-      CurrentMarketRegime = REGIME_TRENDING;
-      CurrentHtf1Range.isValid = false;
-      return;
-   }
-   
-   MqlRates last_closed_candle = htf1_rates[1];
-   
-   // Allow minor wick breaches to adjust the range boundaries
-   if(last_closed_candle.high > CurrentHtf1Range.high && last_closed_candle.close < CurrentHtf1Range.high)
-      CurrentHtf1Range.high = last_closed_candle.high;
-      
-   if(last_closed_candle.low < CurrentHtf1Range.low && last_closed_candle.close > CurrentHtf1Range.low)
-      CurrentHtf1Range.low = last_closed_candle.low;
-      
-   bool touchedSupport = last_closed_candle.low <= CurrentHtf1Range.low;
-   bool touchedResistance = last_closed_candle.high >= CurrentHtf1Range.high;
-   
-   // Logic to record touches
-   if(touchedSupport && CurrentHtf1Range.lastTouchType != 1)
-   {
-      CurrentHtf1Range.lastTouchType = 1; // 1 = Support
-      if(CurrentHtf1Range.supportTouches < 5) // Prevent array overflow
-      {
-         CurrentHtf1Range.supportTouchTimes[CurrentHtf1Range.supportTouches] = last_closed_candle.time;
-         CurrentHtf1Range.supportTouchPrices[CurrentHtf1Range.supportTouches] = last_closed_candle.low;
-         CurrentHtf1Range.supportTouches++;
-      }
-   }
-   else if(touchedResistance && CurrentHtf1Range.lastTouchType != 2)
-   {
-      CurrentHtf1Range.lastTouchType = 2; // 2 = Resistance
-      if(CurrentHtf1Range.resistanceTouches < 5) // Prevent array overflow
-      {
-         CurrentHtf1Range.resistanceTouchTimes[CurrentHtf1Range.resistanceTouches] = last_closed_candle.time;
-         CurrentHtf1Range.resistanceTouchPrices[CurrentHtf1Range.resistanceTouches] = last_closed_candle.high;
-         CurrentHtf1Range.resistanceTouches++;
-      }
-   }
-   
-   // The range is considered "confirmed" after multiple touches on both sides
-   if(!CurrentHtf1Range.isConfirmed && CurrentHtf1Range.supportTouches >= 2 && CurrentHtf1Range.resistanceTouches >= 2)
-   {
-      CurrentHtf1Range.isConfirmed = true;
-      Print("Market range confirmed between ", CurrentHtf1Range.low, " and ", CurrentHtf1Range.high);
-   }
-}
-
-// --- [NEW] PATTERN RECOGNITION LOGIC ---
-// Checks for a Double/Triple Top pattern and returns an entry price if a valid signal candle appears.
-double GetTopPatternSignal(const MqlRates &candles[], int requiredTouches)
-{
-   if(CurrentHtf1Range.resistanceTouches < requiredTouches)
-      return 0.0; // Not enough touches to form the pattern
-
-   // For a top pattern, we need a bearish signal candle (e.g., engulfing) at the resistance level.
-   if(IsBearishEngulfing(candles, 1) || GetSweepSignal(candles, 1, CurrentHtf1Range.low, CurrentHtf1Range.high) == -1)
-   {
-      string pattern = (requiredTouches == 2) ? "Double Top" : "Triple Top";
-      Print(pattern, " reversal signal detected. Looking to SELL.");
-      return SymbolInfoDouble(_Symbol, SYMBOL_BID); // Return current price for a market sell order
-   }
-   
-   return 0.0;
-}
-
-// Checks for a Double/Triple Bottom pattern and returns an entry price if a valid signal candle appears.
-double GetBottomPatternSignal(const MqlRates &candles[], int requiredTouches)
-{
-   if(CurrentHtf1Range.supportTouches < requiredTouches)
-      return 0.0; // Not enough touches to form the pattern
-      
-   // For a bottom pattern, we need a bullish signal candle (e.g., engulfing) at the support level.
-   if(IsBullishEngulfing(candles, 1) || GetSweepSignal(candles, 1, CurrentHtf1Range.low, CurrentHtf1Range.high) == 1)
-   {
-      string pattern = (requiredTouches == 2) ? "Double Bottom" : "Triple Bottom";
-      Print(pattern, " reversal signal detected. Looking to BUY.");
-      return SymbolInfoDouble(_Symbol, SYMBOL_ASK); // Return current price for a market buy order
-   }
-   
-   return 0.0;
-}
-
-void ExecuteRangingStrategy()
-{
-   if(!CurrentHtf1Range.isValid || !CurrentHtf1Range.isConfirmed) return;
-   
-   MqlRates range_tf_rates[];
-   if(CopyRates(_Symbol, Range_TradeTimeframe, 0, 5, range_tf_rates) < 5) return;
-   ArraySetAsSeries(range_tf_rates, true);
-   
-   MqlRates last_closed_candle = range_tf_rates[1];
-   if(last_closed_candle.time == lastRangeSignalTime) return;
-   
-   if(!PerformPreFlightChecks(RangeRiskPercent)) return;
-
-   double range_tf_atr = 0;
-   double atr_buffer[];
-   if(CopyBuffer(iATR(_Symbol, Range_TradeTimeframe, AtrPeriod), 0, 1, 1, atr_buffer) > 0)
-      range_tf_atr = atr_buffer[0];
-   if(range_tf_atr == 0) return;
-
-   // --- NEW PATTERN HIERARCHY ---
-   // 1. Check for Triple Top / Triple Bottom (Highest Priority)
-   double entryPrice = GetTopPatternSignal(range_tf_rates, 3);
-   if(entryPrice > 0 && (!AllowHedging ? !HasOppositePosition(ORDER_TYPE_SELL) : true))
-   {
-      if(Range_EnableRsiFilter && !IsRsiFavorable(false)) return;
-      if(!IsMomentumFavorable(-1, range_tf_rates)) return;
-      double stopLoss = last_closed_candle.high + (range_tf_atr * RangeSlAtrMultiplier);
-      double finalTakeProfit = CurrentHtf1Range.low + (range_tf_atr * 0.25);
-      PlaceRangeTrade(ORDER_TYPE_SELL, entryPrice, stopLoss, finalTakeProfit, CurrentHtf1Range.low + (CurrentHtf1Range.high - CurrentHtf1Range.low) * 0.5, last_closed_candle.time);
-      return; // Trade taken, exit function
-   }
-   
-   entryPrice = GetBottomPatternSignal(range_tf_rates, 3);
-   if(entryPrice > 0 && (!AllowHedging ? !HasOppositePosition(ORDER_TYPE_BUY) : true))
-   {
-      if(Range_EnableRsiFilter && !IsRsiFavorable(true)) return;
-      if(!IsMomentumFavorable(1, range_tf_rates)) return;
-      double stopLoss = last_closed_candle.low - (range_tf_atr * RangeSlAtrMultiplier);
-      double finalTakeProfit = CurrentHtf1Range.high - (range_tf_atr * 0.25);
-      PlaceRangeTrade(ORDER_TYPE_BUY, entryPrice, stopLoss, finalTakeProfit, CurrentHtf1Range.low + (CurrentHtf1Range.high - CurrentHtf1Range.low) * 0.5, last_closed_candle.time);
-      return; // Trade taken, exit function
-   }
-
-   // 2. Check for Double Top / Double Bottom
-   entryPrice = GetTopPatternSignal(range_tf_rates, 2);
-   if(entryPrice > 0 && (!AllowHedging ? !HasOppositePosition(ORDER_TYPE_SELL) : true))
-   {
-      if(Range_EnableRsiFilter && !IsRsiFavorable(false)) return;
-      if(!IsMomentumFavorable(-1, range_tf_rates)) return;
-      double stopLoss = last_closed_candle.high + (range_tf_atr * RangeSlAtrMultiplier);
-      double finalTakeProfit = CurrentHtf1Range.low + (range_tf_atr * 0.25);
-      PlaceRangeTrade(ORDER_TYPE_SELL, entryPrice, stopLoss, finalTakeProfit, CurrentHtf1Range.low + (CurrentHtf1Range.high - CurrentHtf1Range.low) * 0.5, last_closed_candle.time);
-      return; // Trade taken, exit function
-   }
-
-   entryPrice = GetBottomPatternSignal(range_tf_rates, 2);
-   if(entryPrice > 0 && (!AllowHedging ? !HasOppositePosition(ORDER_TYPE_BUY) : true))
-   {
-      if(Range_EnableRsiFilter && !IsRsiFavorable(true)) return;
-      if(!IsMomentumFavorable(1, range_tf_rates)) return;
-      double stopLoss = last_closed_candle.low - (range_tf_atr * RangeSlAtrMultiplier);
-      double finalTakeProfit = CurrentHtf1Range.high - (range_tf_atr * 0.25);
-      PlaceRangeTrade(ORDER_TYPE_BUY, entryPrice, stopLoss, finalTakeProfit, CurrentHtf1Range.low + (CurrentHtf1Range.high - CurrentHtf1Range.low) * 0.5, last_closed_candle.time);
-      return; // Trade taken, exit function
-   }
-}
-
+void ManageRangeValidation(const MqlRates &htf1_rates[]){ if(EnableVolatilityEngine && CurrentVolatilityRegime >= VOL_HIGH){ CurrentMarketRegime = REGIME_TRENDING; CurrentHtf1Range.isValid = false; return;
+   } MqlRates last_closed_candle = htf1_rates[1]; if(last_closed_candle.high > CurrentHtf1Range.high && last_closed_candle.close < CurrentHtf1Range.high) CurrentHtf1Range.high = last_closed_candle.high;
+   if(last_closed_candle.low < CurrentHtf1Range.low && last_closed_candle.close > CurrentHtf1Range.low) CurrentHtf1Range.low = last_closed_candle.low; if(!CurrentHtf1Range.isConfirmed){ bool touchedSupport = last_closed_candle.low <= CurrentHtf1Range.low;
+   bool touchedResistance = last_closed_candle.high >= CurrentHtf1Range.high; if(touchedSupport && CurrentHtf1Range.lastTouchType != 1) { CurrentHtf1Range.supportTouches++; CurrentHtf1Range.lastTouchType = 1;
+   } else if(touchedResistance && CurrentHtf1Range.lastTouchType != 2) { CurrentHtf1Range.resistanceTouches++; CurrentHtf1Range.lastTouchType = 2;
+   } if(CurrentHtf1Range.supportTouches >= 2 && CurrentHtf1Range.resistanceTouches >= 2) CurrentHtf1Range.isConfirmed = true; } }
+void ExecuteRangingStrategy(){ if(!CurrentHtf1Range.isValid || !CurrentHtf1Range.isConfirmed) return; MqlRates range_tf_rates[];
+   if(CopyRates(_Symbol, Range_TradeTimeframe, 0, 5, range_tf_rates) < 5) return; ArraySetAsSeries(range_tf_rates, true); MqlRates last_closed_candle = range_tf_rates[1]; if(last_closed_candle.time == lastRangeSignalTime) return; if(!PerformPreFlightChecks(RangeRiskPercent)) return;
+   double support = CurrentHtf1Range.low, resistance = CurrentHtf1Range.high; double range_tf_atr = 0; double atr_buffer[]; if(CopyBuffer(iATR(_Symbol,Range_TradeTimeframe,AtrPeriod),0,1,1,atr_buffer)>0) range_tf_atr = atr_buffer[0];
+   if(range_tf_atr == 0) return; if(last_closed_candle.low <= support + range_tf_atr){ bool signal = IsBullishEngulfing(range_tf_rates, 1) ||
+   GetSweepSignal(range_tf_rates, 1, support, resistance) == 1; if(signal && (!AllowHedging ? !HasOppositePosition(ORDER_TYPE_BUY) : true)){ if(Range_EnableRsiFilter && !IsRsiFavorable(true)) return; if(!IsMomentumFavorable(1, range_tf_rates)) return;
+   double entryPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK); double stopLoss = last_closed_candle.low - (range_tf_atr * RangeSlAtrMultiplier);
+   double finalTakeProfit = resistance - (range_tf_atr * 0.25); PlaceRangeTrade(ORDER_TYPE_BUY, entryPrice, stopLoss, finalTakeProfit, support + (resistance - support) * 0.5, last_closed_candle.time);
+   } } if(last_closed_candle.high >= resistance - range_tf_atr){ bool signal = IsBearishEngulfing(range_tf_rates, 1) || GetSweepSignal(range_tf_rates, 1, support, resistance) == -1;
+   if(signal && (!AllowHedging ? !HasOppositePosition(ORDER_TYPE_SELL) : true)){ if(Range_EnableRsiFilter && !IsRsiFavorable(false)) return; if(!IsMomentumFavorable(-1, range_tf_rates)) return; double entryPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double stopLoss = last_closed_candle.high + (range_tf_atr * RangeSlAtrMultiplier); double finalTakeProfit = support + (range_tf_atr * 0.25);
+   PlaceRangeTrade(ORDER_TYPE_SELL, entryPrice, stopLoss, finalTakeProfit, support + (resistance - support) * 0.5, last_closed_candle.time);
+   } } }
 void PlaceRangeTrade(ENUM_ORDER_TYPE type, double entry, double sl, double tp_final, double tp_partial, datetime signalTime){ double riskDist = MathAbs(entry - sl);
    if(riskDist <= 0) return; double lotSize = CalculateLotSize(sl, entry, RangeRiskPercent); if (lotSize <= 0) return; if(!IsMarginSufficient(lotSize, type)) return; trade.SetExpertMagicNumber(RangeMagicNumber);
    if(Range_EnablePartialTp && (lotSize / 2.0) >= SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN)){ double halfLot = NormalizeDouble(lotSize / 2.0, 2);
@@ -834,6 +598,11 @@ double CalculateProfitForPeriod(datetime startTime){ HistorySelect(startTime, Ti
 void CloseAllAndStopTrading(bool stopForWeek){ if(stopForWeek) isTradingStoppedForWeek = true; isTradingStoppedForDay = true; CancelPendingOrders(MagicNumber_Trend); CancelPendingOrders(RangeMagicNumber);
    for(int i = PositionsTotal() - 1; i >= 0; i--){ ulong ticket = PositionGetTicket(i); if(PositionSelectByTicket(ticket)){ long magic = PositionGetInteger(POSITION_MAGIC);
    if(magic == MagicNumber_Trend || magic == RangeMagicNumber) trade.PositionClose(ticket); } } }
+void DetermineStrategyPriority(){ HighestPrioritySetup = STRATEGY_NONE;
+   bool isIchiFavorableForRange = (!EnableIchimokuBias || IchimokuBias == BIAS_NONE); if(EnableRangingStrategy && CurrentMarketRegime == REGIME_RANGING && CurrentHtf1Range.isConfirmed && isIchiFavorableForRange){ HighestPrioritySetup = STRATEGY_RANGE;
+   return; } if(EnableTrendStrategy && CurrentMarketRegime == REGIME_TRENDING){ if(EnableIchimokuBias){ if(IchimokuBias == BIAS_NONE) return; ENUM_TREND requiredIchiTrend = (IchimokuBias == BIAS_BULLISH) ?
+   UP : DOWN; if(EnableMultiHtfFilter && NumberOfHtfs >= HTF_COUNT_1){ if(HtfStates[0].currentTrend != requiredIchiTrend && HtfStates[0].currentTrend != NO_TREND) return;
+   } } HighestPrioritySetup = STRATEGY_TREND; } }
 void UpdateVolatilityRegime(){ if(!EnableVolatilityEngine || !isVolatilityFilterActive) return; double short_atr_buffer[], long_atr_buffer[];
    if(CopyBuffer(shortAtrOnHtfHandle, 0, 1, 1, short_atr_buffer) < 1 || CopyBuffer(longAtrHandle, 0, 1, 1, long_atr_buffer) < 1 || long_atr_buffer[0] <= 0){ currentVolatilityIndex = 1.0;
    CurrentVolatilityRegime = VOL_NORMAL; return; } currentVolatilityIndex = short_atr_buffer[0] / long_atr_buffer[0]; ENUM_VOLATILITY_REGIME previousRegime = CurrentVolatilityRegime; if(currentVolatilityIndex < Volatility_LowThreshold) CurrentVolatilityRegime = VOL_LOW;
