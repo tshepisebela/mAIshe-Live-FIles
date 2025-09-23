@@ -1,10 +1,12 @@
 //+------------------------------------------------------------------+
-//|  mAIshe V23.1 (Compiler Fix)                                     |
+//|  mAIshe V25.1 (DayTrade Time Filter)                             |
 //|                      Copyright 2025, The Pro Trader              |
+//|  - Time & Session filters now apply only to Day Trading Strategy |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, The Pro Trader"
 #property link      ""
-#property version   "23.1" // Version with compiler fix for ProcessMarketStructure
+#property version   "25.1" // Time filters are now strategy-specific
+
 #include <Trade/Trade.mqh>
 #include <Trade/AccountInfo.mqh>
 
@@ -19,23 +21,19 @@ enum ENUM_HTF_COUNT
    HTF_COUNT_2 = 2,
    HTF_COUNT_3 = 3
 };
+
 //--- EA Inputs
 input group "Global Trade Settings"
-input bool   EnableTrendStrategy     = true;         // MASTER SWITCH for Trend-Following Strategy
-input bool   AllowHedging            = false;        // If true, EA can open buy and sell trades at the same time
+input bool   EnableTrendStrategy       = true;         // MASTER SWITCH for Trend-Following Strategy
+input bool   EnableDayTradingStrategy  = false;        // MASTER SWITCH for Day Trading Strategy
+input bool   AllowHedging              = false;        // If true, EA can open buy and sell trades at the same time
 
 input group "Trade Execution Settings"
-input ulong  MaxSlippagePoints       = 30;           // Max allowed slippage for market orders (in points)
-input double MaxSpreadPips           = 3.0;          // Abort trade if spread exceeds this (in pips)
-input uint   SimulatedSlippagePoints = 2;            // For backtesting: simulate X points of slippage on pending orders
-input int    OrderRetries            = 3;            // Number of retries on requote/server error
-input int    RetryDelayMs            = 250;          // Milliseconds to wait between retries
-
-input group "Time & Session Filters"
-input bool   EnableTimeFilter            = true;
-input int    TradeAllowedFromHour        = 1;          // Server hour to start trading (e.g., 1 = after first hour)
-input int    TradeAllowedToHour          = 23;         // Server hour to stop trading (e.g., 23 = before last hour)
-input int    BlockMinutesAfterMarketOpen = 15;         // Don't trade for N minutes after daily bar open
+input ulong  MaxSlippagePoints         = 30;           // Max allowed slippage for market orders (in points)
+input double MaxSpreadPips             = 3.0;          // Abort trade if spread exceeds this (in pips)
+input uint   SimulatedSlippagePoints   = 2;            // For backtesting: simulate X points of slippage on pending orders
+input int    OrderRetries              = 3;            // Number of retries on requote/server error
+input int    RetryDelayMs              = 250;          // Milliseconds to wait between retries
 
 input group "Performance Settings"
 input int    HistoryScanBars = 2000;
@@ -54,7 +52,7 @@ input double MaxWeeklyProfitPercent = 20.0;
 input group "Overall Exposure Management"
 input double MaxTotalRiskPercent  = 4.0;              // Max total risk across ALL open/pending trades
 
-input group "Adaptive Risk Management"
+input group "Adaptive Risk Management (Global)"
 input bool   EnableAdaptiveRisk      = true;
 input double PrimeRiskPercentage     = 1.5;            // Risk % to use for A+ "Prime" setups
 input double ImpulseCandleMultiplier = 1.5;            // Multiplier for avg candle body to qualify a strong impulse
@@ -62,45 +60,101 @@ input int    AvgBodyPeriod           = 50;             // Period for calculating
 double       PrimeMinAtrMult         = 2.0;
 input double SwingConfirmationAtrMult = 0.5;           // ATR multiplier to confirm a swing point's significance
 
-input group "Multi-Timeframe Confluence (Trend Strategy)"
-input bool   EnableMultiHtfFilter = true;
-input ENUM_HTF_COUNT NumberOfHtfs = HTF_COUNT_3;
-input ENUM_TIMEFRAMES Htf1_Timeframe = PERIOD_D1;
-input ENUM_TIMEFRAMES Htf2_Timeframe = PERIOD_H4;
-input ENUM_TIMEFRAMES Htf3_Timeframe = PERIOD_H1;
+//--- TREND STRATEGY INPUTS ---
+input group "--- Trend Strategy ---"
+input ENUM_TIMEFRAMES Trend_Timeframe = PERIOD_H1;      // Entry timeframe for trend strategy
+//---
+input group "Trend :: Multi-Timeframe Confluence"
+input bool   Trend_EnableMultiHtfFilter = true;
+input ENUM_HTF_COUNT Trend_NumberOfHtfs = HTF_COUNT_3;
+input ENUM_TIMEFRAMES Trend_Htf1_Timeframe = PERIOD_D1;
+input ENUM_TIMEFRAMES Trend_Htf2_Timeframe = PERIOD_H4;
+input ENUM_TIMEFRAMES Trend_Htf3_Timeframe = PERIOD_H1;
+//---
+input group "Trend :: Multi-Timeframe EMA Filters"
+input bool   Trend_Htf1_EnableEmaFilter = true;
+input int    Trend_Htf1_EmaPeriod       = 50;
+input ENUM_MA_METHOD Trend_Htf1_EmaMethod = MODE_EMA;
+input ENUM_APPLIED_PRICE Trend_Htf1_EmaPrice = PRICE_CLOSE;
+input bool   Trend_Htf2_EnableEmaFilter = true;
+input int    Trend_Htf2_EmaPeriod       = 50;
+input ENUM_MA_METHOD Trend_Htf2_EmaMethod = MODE_EMA;
+input ENUM_APPLIED_PRICE Trend_Htf2_EmaPrice = PRICE_CLOSE;
+input bool   Trend_Htf3_EnableEmaFilter = true;
+input int    Trend_Htf3_EmaPeriod       = 50;
+input ENUM_MA_METHOD Trend_Htf3_EmaMethod = MODE_EMA;
+input ENUM_APPLIED_PRICE Trend_Htf3_EmaPrice = PRICE_CLOSE;
+//---
+input group "Trend :: Adaptive Parameters"
+input double Trend_LowVolRRMultiplier     = 0.75;
+input double Trend_HighVolRRMultiplier    = 1.5;
+input double Trend_HighVolSlAtrMultiplier = 1.25;
+//---
+input group "Trend :: LTF Confirmation"
+input bool   Trend_EnableEmaFilter = true;
+input int    Trend_EmaFilterPeriod = 50;
+input ENUM_MA_METHOD Trend_EmaFilterMethod = MODE_EMA;
+input ENUM_APPLIED_PRICE Trend_EmaFilterPrice = PRICE_CLOSE;
+//---
+input group "Trend :: Core Settings"
+input double Trend_RiskPerEntryPercent = 0.5;
+input int    Trend_MaxRunningTrades    = 6;
+input int    MagicNumber_Trend         = 12345;
+input double Trend_BaseTakeProfitRR    = 6.0;
+input double Trend_BaseSlAtrMult       = 0.5;
+input double Trend_MinPullbackAtrMult  = 1.0;
 
-input group "Multi-Timeframe EMA Filters (Trend Strategy)"
-input bool   Htf1_EnableEmaFilter = true;
-input int    Htf1_EmaPeriod       = 50;
-input ENUM_MA_METHOD Htf1_EmaMethod = MODE_EMA;
-input ENUM_APPLIED_PRICE Htf1_EmaPrice = PRICE_CLOSE;
-input bool   Htf2_EnableEmaFilter = true;
-input int    Htf2_EmaPeriod       = 50;
-input ENUM_MA_METHOD Htf2_EmaMethod = MODE_EMA;
-input ENUM_APPLIED_PRICE Htf2_EmaPrice = PRICE_CLOSE;
-input bool   Htf3_EnableEmaFilter = true;
-input int    Htf3_EmaPeriod       = 50;
-input ENUM_MA_METHOD Htf3_EmaMethod = MODE_EMA;
-input ENUM_APPLIED_PRICE Htf3_EmaPrice = PRICE_CLOSE;
 
-input group "Adaptive Trend Parameters"
-double Trend_LowVolRRMultiplier     = 0.75;
-double Trend_HighVolRRMultiplier    = 1.5;
-double Trend_HighVolSlAtrMultiplier = 1.25;
+//--- DAY TRADING STRATEGY INPUTS ---
+input group "--- Day Trading Strategy ---"
+input ENUM_TIMEFRAMES DayTrade_Timeframe = PERIOD_M5; // Entry timeframe for day trading strategy
+//---
+input group "DayTrade :: Time & Session Filters"
+input bool   DayTrade_EnableTimeFilter            = true;
+input int    DayTrade_TradeAllowedFromHour        = 1;          // Server hour to start trading
+input int    DayTrade_TradeAllowedToHour          = 23;         // Server hour to stop trading
+input int    DayTrade_BlockMinutesAfterMarketOpen = 15;         // Don't trade for N minutes after daily bar open
+//---
+input group "DayTrade :: Multi-Timeframe Confluence"
+input bool   DayTrade_EnableMultiHtfFilter = true;
+input ENUM_HTF_COUNT DayTrade_NumberOfHtfs = HTF_COUNT_3;
+input ENUM_TIMEFRAMES DayTrade_Htf1_Timeframe = PERIOD_H4;
+input ENUM_TIMEFRAMES DayTrade_Htf2_Timeframe = PERIOD_H1;
+input ENUM_TIMEFRAMES DayTrade_Htf3_Timeframe = PERIOD_M15;
+//---
+input group "DayTrade :: Multi-Timeframe EMA Filters"
+input bool   DayTrade_Htf1_EnableEmaFilter = true;
+input int    DayTrade_Htf1_EmaPeriod       = 50;
+input ENUM_MA_METHOD DayTrade_Htf1_EmaMethod = MODE_EMA;
+input ENUM_APPLIED_PRICE DayTrade_Htf1_EmaPrice = PRICE_CLOSE;
+input bool   DayTrade_Htf2_EnableEmaFilter = true;
+input int    DayTrade_Htf2_EmaPeriod       = 50;
+input ENUM_MA_METHOD DayTrade_Htf2_EmaMethod = MODE_EMA;
+input ENUM_APPLIED_PRICE DayTrade_Htf2_EmaPrice = PRICE_CLOSE;
+input bool   DayTrade_Htf3_EnableEmaFilter = true;
+input int    DayTrade_Htf3_EmaPeriod       = 50;
+input ENUM_MA_METHOD DayTrade_Htf3_EmaMethod = MODE_EMA;
+input ENUM_APPLIED_PRICE DayTrade_Htf3_EmaPrice = PRICE_CLOSE;
+//---
+input group "DayTrade :: Adaptive Parameters"
+input double DayTrade_LowVolRRMultiplier     = 0.75;
+input double DayTrade_HighVolRRMultiplier    = 1.5;
+input double DayTrade_HighVolSlAtrMultiplier = 1.25;
+//---
+input group "DayTrade :: LTF Confirmation"
+input bool   DayTrade_EnableEmaFilter = true;
+input int    DayTrade_EmaFilterPeriod = 50;
+input ENUM_MA_METHOD DayTrade_EmaFilterMethod = MODE_EMA;
+input ENUM_APPLIED_PRICE DayTrade_EmaFilterPrice = PRICE_CLOSE;
+//---
+input group "DayTrade :: Core Settings"
+input double DayTrade_RiskPerEntryPercent = 0.5;
+input int    DayTrade_MaxRunningTrades    = 4;
+input int    MagicNumber_DayTrade         = 67890;
+input double DayTrade_BaseTakeProfitRR    = 3.0;
+input double DayTrade_BaseSlAtrMult       = 0.5;
+input double DayTrade_MinPullbackAtrMult  = 1.0;
 
-input group "LTF Trend Confirmation"
-input bool   EnableEmaFilter = true;
-input int    EmaFilterPeriod = 50;
-input ENUM_MA_METHOD EmaFilterMethod = MODE_EMA;
-input ENUM_APPLIED_PRICE EmaFilterPrice = PRICE_CLOSE;
-
-input group "Trend Strategy Settings"
-input double RiskPerEntryPercent     = 0.5;
-input int    MaxRunningTrades        = 6;
-input int    MagicNumber_Trend       = 12345;
-input double Trend_BaseTakeProfitRR  = 6.0;
-input double Trend_BaseSlAtrMult     = 0.5;
-double       MinPullbackAtrMult      = 1.0;
 
 input group "Institutional Trade Management"
 input bool   EnableAdvancedManagement = true;
@@ -125,11 +179,9 @@ input group "Display Settings"
 input bool   ShowDashboard = true;
 
 //--- Global Handles and State
-int      atrHandle;
 int      runnerAtrHandle;
 int      longAtrHandle;
 int      shortAtrOnHtfHandle;
-int      ltfEmaHandle;
 
 //--- Global Enums
 enum ENUM_TREND { NO_TREND, UP, DOWN };
@@ -139,6 +191,7 @@ enum ENUM_MANAGE_PHASE { PHASE_INITIAL, PHASE_BREAKEVEN, PHASE_RUNNER };
 
 //--- Global Structs
 struct SwingPoint { double price; datetime time; };
+
 struct TimeframeState
 {
    ENUM_TREND      currentTrend;
@@ -157,6 +210,60 @@ struct TimeframeState
    datetime        lastChochTime;
 };
 
+struct StrategyContext
+{
+    // Configuration
+    bool              isEnabled;
+    long              magicNumber;
+    ENUM_TIMEFRAMES   entryTimeframe;
+    double            riskPerEntryPercent;
+    int               maxRunningTrades;
+    double            baseTakeProfitRR;
+    double            baseSlAtrMult;
+    double            minPullbackAtrMult;
+    bool              enableEmaFilter;
+    int               emaFilterPeriod;
+    ENUM_MA_METHOD    emaFilterMethod;
+    ENUM_APPLIED_PRICE emaFilterPrice;
+
+    // Independent Time Filter Settings
+    bool              enableTimeFilter;
+    int               tradeAllowedFromHour;
+    int               tradeAllowedToHour;
+    int               blockMinutesAfterMarketOpen;
+    
+    // Independent HTF configuration and state
+    bool              enableMultiHtfFilter;
+    ENUM_HTF_COUNT    numberOfHtfs;
+    TimeframeState    htfStates[3];
+    ENUM_TIMEFRAMES   htfTimeframes[3];
+    bool              htfEnableEmaFilter[3];
+    int               htfEmaPeriod[3];
+    ENUM_MA_METHOD    htfEmaMethod[3];
+    ENUM_APPLIED_PRICE htfEmaPrice[3];
+    
+    // Independent Adaptive Parameters
+    double            lowVolRRMultiplier;
+    double            highVolRRMultiplier;
+    double            highVolSlAtrMultiplier;
+
+    // State
+    ENUM_TREND        currentTrend;
+    ENUM_STATE        currentState;
+    SwingPoint        swingLowAnchor;
+    SwingPoint        swingHighAnchor;
+    SwingPoint        currentImpulseHigh;
+    SwingPoint        currentImpulseLow;
+    SwingPoint        currentPullbackLow;
+    SwingPoint        currentPullbackHigh;
+    datetime          lastTradeSetupTime;
+    datetime          lastBarTime;
+    
+    // Handles
+    int               atrHandle;
+    int               emaHandle;
+};
+
 struct ManagedPosition
 {
    ulong             ticket;
@@ -169,15 +276,6 @@ struct ManagedPosition
 ManagedPosition        ManagedPositions[];
 ENUM_VOLATILITY_REGIME CurrentVolatilityRegime = VOL_NORMAL;
 double                 currentVolatilityIndex  = 1.0;
-ENUM_TREND             CurrentTrend            = NO_TREND;
-ENUM_STATE             CurrentState            = TRACKING_IMPULSE;
-datetime               lastTradeSetupTime      = 0;
-SwingPoint             SwingLowAnchor, SwingHighAnchor, CurrentImpulseHigh, CurrentImpulseLow, CurrentPullbackLow, CurrentPullbackHigh;
-TimeframeState         HtfStates[3];
-bool                   Htf_EnableEmaFilter_Inputs[3];
-int                    Htf_EmaPeriod_Inputs[3];
-ENUM_MA_METHOD         Htf_EmaMethod_Inputs[3];
-ENUM_APPLIED_PRICE     Htf_EmaPrice_Inputs[3];
 datetime               currentDayStart;
 datetime               currentWeekStart;
 double                 startOfDayBalance;
@@ -186,15 +284,17 @@ bool                   isTradingStoppedForDay  = false;
 bool                   isTradingStoppedForWeek = false;
 bool                   isVolatilityFilterActive = true;
 
+//--- Strategy Context Instances
+StrategyContext TrendStrategy;
+StrategyContext DayTradeStrategy;
+
+
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   trade.SetExpertMagicNumber(MagicNumber_Trend);
-   trade.SetDeviationInPoints(MaxSlippagePoints);
-   trade.SetTypeFillingBySymbol(_Symbol);
-   atrHandle = iATR(_Symbol, _Period, AtrPeriod);
+   // --- Global Initializations ---
    runnerAtrHandle = iATR(_Symbol, _Period, RunnerAtrPeriod);
    
    isVolatilityFilterActive = EnableVolatilityFilter;
@@ -209,22 +309,11 @@ int OnInit()
       }
    }
 
-   if(EnableEmaFilter) ltfEmaHandle = iMA(_Symbol, _Period, EmaFilterPeriod, 0, EmaFilterMethod, EmaFilterPrice);
-
-   Htf_EnableEmaFilter_Inputs[0] = Htf1_EnableEmaFilter; Htf_EmaPeriod_Inputs[0] = Htf1_EmaPeriod; Htf_EmaMethod_Inputs[0] = Htf1_EmaMethod; Htf_EmaPrice_Inputs[0] = Htf1_EmaPrice;
-   Htf_EnableEmaFilter_Inputs[1] = Htf2_EnableEmaFilter; Htf_EmaPeriod_Inputs[1] = Htf2_EmaPeriod;
-   Htf_EmaMethod_Inputs[1] = Htf2_EmaMethod; Htf_EmaPrice_Inputs[1] = Htf2_EmaPrice;
-   Htf_EnableEmaFilter_Inputs[2] = Htf3_EnableEmaFilter; Htf_EmaPeriod_Inputs[2] = Htf3_EmaPeriod; Htf_EmaMethod_Inputs[2] = Htf3_EmaMethod; Htf_EmaPrice_Inputs[2] = Htf3_EmaPrice;
-
-   HtfStates[0].timeframe = Htf1_Timeframe; HtfStates[0].objectPrefix = "EA_HTF1_"; HtfStates[0].emaHandle = Htf1_EnableEmaFilter ?
-   iMA(_Symbol, Htf1_Timeframe, Htf1_EmaPeriod, 0, Htf1_EmaMethod, Htf1_EmaPrice) : INVALID_HANDLE;
-   HtfStates[1].timeframe = Htf2_Timeframe; HtfStates[1].objectPrefix = "EA_HTF2_"; HtfStates[1].emaHandle = Htf2_EnableEmaFilter ?
-   iMA(_Symbol, Htf2_Timeframe, Htf2_EmaPeriod, 0, Htf2_EmaMethod, Htf2_EmaPrice) : INVALID_HANDLE;
-   HtfStates[2].timeframe = Htf3_Timeframe; HtfStates[2].objectPrefix = "EA_HTF3_"; HtfStates[2].emaHandle = Htf3_EnableEmaFilter ?
-   iMA(_Symbol, Htf3_Timeframe, Htf3_EmaPeriod, 0, Htf3_EmaMethod, Htf3_EmaPrice) : INVALID_HANDLE;
-
-   for(int i=0; i<ArraySize(HtfStates); i++) InitializeHtfStateFromHistory(HtfStates[i]);
-
+   // --- Initialize Strategy Contexts ---
+   InitializeStrategyContext(TrendStrategy, EnableTrendStrategy, MagicNumber_Trend, Trend_Timeframe, Trend_RiskPerEntryPercent, Trend_MaxRunningTrades, Trend_BaseTakeProfitRR, Trend_BaseSlAtrMult, Trend_MinPullbackAtrMult, Trend_EnableEmaFilter, Trend_EmaFilterPeriod, Trend_EmaFilterMethod, Trend_EmaFilterPrice, false, 0, 0, 0, Trend_EnableMultiHtfFilter, Trend_NumberOfHtfs, Trend_Htf1_Timeframe, Trend_Htf2_Timeframe, Trend_Htf3_Timeframe, Trend_Htf1_EnableEmaFilter, Trend_Htf2_EnableEmaFilter, Trend_Htf3_EnableEmaFilter, Trend_Htf1_EmaPeriod, Trend_Htf2_EmaPeriod, Trend_Htf3_EmaPeriod, Trend_Htf1_EmaMethod, Trend_Htf2_EmaMethod, Trend_Htf3_EmaMethod, Trend_Htf1_EmaPrice, Trend_Htf2_EmaPrice, Trend_Htf3_EmaPrice, Trend_LowVolRRMultiplier, Trend_HighVolRRMultiplier, Trend_HighVolSlAtrMultiplier);
+   InitializeStrategyContext(DayTradeStrategy, EnableDayTradingStrategy, MagicNumber_DayTrade, DayTrade_Timeframe, DayTrade_RiskPerEntryPercent, DayTrade_MaxRunningTrades, DayTrade_BaseTakeProfitRR, DayTrade_BaseSlAtrMult, DayTrade_MinPullbackAtrMult, DayTrade_EnableEmaFilter, DayTrade_EmaFilterPeriod, DayTrade_EmaFilterMethod, DayTrade_EmaFilterPrice, DayTrade_EnableTimeFilter, DayTrade_TradeAllowedFromHour, DayTrade_TradeAllowedToHour, DayTrade_BlockMinutesAfterMarketOpen, DayTrade_EnableMultiHtfFilter, DayTrade_NumberOfHtfs, DayTrade_Htf1_Timeframe, DayTrade_Htf2_Timeframe, DayTrade_Htf3_Timeframe, DayTrade_Htf1_EnableEmaFilter, DayTrade_Htf2_EnableEmaFilter, DayTrade_Htf3_EnableEmaFilter, DayTrade_Htf1_EmaPeriod, DayTrade_Htf2_EmaPeriod, DayTrade_Htf3_EmaPeriod, DayTrade_Htf1_EmaMethod, DayTrade_Htf2_EmaMethod, DayTrade_Htf3_EmaMethod, DayTrade_Htf1_EmaPrice, DayTrade_Htf2_EmaPrice, DayTrade_Htf3_EmaPrice, DayTrade_LowVolRRMultiplier, DayTrade_HighVolRRMultiplier, DayTrade_HighVolSlAtrMultiplier);
+   
+   // --- Final Setup ---
    TimeCurrent();
    currentDayStart = TimeCurrent() - (TimeCurrent() % 86400);
    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
@@ -234,9 +323,64 @@ int OnInit()
    startOfWeekBalance = AccountInfoDouble(ACCOUNT_BALANCE);
 
    ObjectsDeleteAll(0, "EA_");
-   InitializeStateFromHistory();  
+   if(TrendStrategy.isEnabled) InitializeStrategyStateFromHistory(TrendStrategy);
+   if(DayTradeStrategy.isEnabled) InitializeStrategyStateFromHistory(DayTradeStrategy);
+     
    return(INIT_SUCCEEDED);
 }
+
+void InitializeStrategyContext(StrategyContext &context, bool isEnabled, long magic, ENUM_TIMEFRAMES tf, double risk, int maxTrades, double rr, double slMult, double pbMult, bool emaEnabled, int emaPeriod, ENUM_MA_METHOD emaMethod, ENUM_APPLIED_PRICE emaPrice, bool timeFilter, int fromHour, int toHour, int blockMins, bool htfEnabled, ENUM_HTF_COUNT numHtfs, ENUM_TIMEFRAMES htf1, ENUM_TIMEFRAMES htf2, ENUM_TIMEFRAMES htf3, bool htf1Ema, bool htf2Ema, bool htf3Ema, int htf1EmaP, int htf2EmaP, int htf3EmaP, ENUM_MA_METHOD htf1EmaM, ENUM_MA_METHOD htf2EmaM, ENUM_MA_METHOD htf3EmaM, ENUM_APPLIED_PRICE htf1EmaPr, ENUM_APPLIED_PRICE htf2EmaPr, ENUM_APPLIED_PRICE htf3EmaPr, double lowVolRR, double highVolRR, double highVolSl)
+{
+    context.isEnabled = isEnabled;
+    if(!context.isEnabled) return;
+
+    // Core
+    context.magicNumber = magic;
+    context.entryTimeframe = tf;
+    context.riskPerEntryPercent = risk;
+    context.maxRunningTrades = maxTrades;
+    context.baseTakeProfitRR = rr;
+    context.baseSlAtrMult = slMult;
+    context.minPullbackAtrMult = pbMult;
+    
+    // LTF EMA
+    context.enableEmaFilter = emaEnabled;
+    context.emaFilterPeriod = emaPeriod;
+    context.emaFilterMethod = emaMethod;
+    context.emaFilterPrice = emaPrice;
+    
+    // Time Filters
+    context.enableTimeFilter = timeFilter;
+    context.tradeAllowedFromHour = fromHour;
+    context.tradeAllowedToHour = toHour;
+    context.blockMinutesAfterMarketOpen = blockMins;
+    
+    // HTF
+    context.enableMultiHtfFilter = htfEnabled;
+    context.numberOfHtfs = numHtfs;
+    context.htfTimeframes[0] = htf1; context.htfTimeframes[1] = htf2; context.htfTimeframes[2] = htf3;
+    context.htfEnableEmaFilter[0] = htf1Ema; context.htfEnableEmaFilter[1] = htf2Ema; context.htfEnableEmaFilter[2] = htf3Ema;
+    context.htfEmaPeriod[0] = htf1EmaP; context.htfEmaPeriod[1] = htf2EmaP; context.htfEmaPeriod[2] = htf3EmaP;
+    context.htfEmaMethod[0] = htf1EmaM; context.htfEmaMethod[1] = htf2EmaM; context.htfEmaMethod[2] = htf3EmaM;
+    context.htfEmaPrice[0] = htf1EmaPr; context.htfEmaPrice[1] = htf2EmaPr; context.htfEmaPrice[2] = htf3EmaPr;
+
+    // Adaptive
+    context.lowVolRRMultiplier = lowVolRR;
+    context.highVolRRMultiplier = highVolRR;
+    context.highVolSlAtrMultiplier = highVolSl;
+    
+    // Handles
+    context.atrHandle = iATR(_Symbol, context.entryTimeframe, AtrPeriod);
+    context.emaHandle = context.enableEmaFilter ? iMA(_Symbol, context.entryTimeframe, context.emaFilterPeriod, 0, context.emaFilterMethod, context.emaFilterPrice) : INVALID_HANDLE;
+    
+    string prefix = (magic == MagicNumber_Trend ? "T_" : "D_");
+    context.htfStates[0].timeframe = context.htfTimeframes[0]; context.htfStates[0].objectPrefix = prefix + "HTF1_"; context.htfStates[0].emaHandle = context.htfEnableEmaFilter[0] ? iMA(_Symbol, context.htfTimeframes[0], context.htfEmaPeriod[0], 0, context.htfEmaMethod[0], context.htfEmaPrice[0]) : INVALID_HANDLE;
+    context.htfStates[1].timeframe = context.htfTimeframes[1]; context.htfStates[1].objectPrefix = prefix + "HTF2_"; context.htfStates[1].emaHandle = context.htfEnableEmaFilter[1] ? iMA(_Symbol, context.htfTimeframes[1], context.htfEmaPeriod[1], 0, context.htfEmaMethod[1], context.htfEmaPrice[1]) : INVALID_HANDLE;
+    context.htfStates[2].timeframe = context.htfTimeframes[2]; context.htfStates[2].objectPrefix = prefix + "HTF3_"; context.htfStates[2].emaHandle = context.htfEnableEmaFilter[2] ? iMA(_Symbol, context.htfTimeframes[2], context.htfEmaPeriod[2], 0, context.htfEmaMethod[2], context.htfEmaPrice[2]) : INVALID_HANDLE;
+
+    for(int i=0; i<(int)context.numberOfHtfs; i++) InitializeHtfStateFromHistory(context.htfStates[i]);
+}
+
 
 //+------------------------------------------------------------------+
 //| OnDeinit                                                         |
@@ -244,12 +388,26 @@ int OnInit()
 void OnDeinit(const int reason) 
 {
    ObjectsDeleteAll(0, "EA_");
-   if(atrHandle != INVALID_HANDLE) IndicatorRelease(atrHandle);
+   // Release global handles
    if(runnerAtrHandle != INVALID_HANDLE) IndicatorRelease(runnerAtrHandle);
    if(longAtrHandle != INVALID_HANDLE) IndicatorRelease(longAtrHandle);
    if(shortAtrOnHtfHandle != INVALID_HANDLE) IndicatorRelease(shortAtrOnHtfHandle);
-   if(ltfEmaHandle != INVALID_HANDLE) IndicatorRelease(ltfEmaHandle);
-   for(int i = 0; i < ArraySize(HtfStates); i++) if(HtfStates[i].emaHandle != INVALID_HANDLE) IndicatorRelease(HtfStates[i].emaHandle);
+   
+   // --- Release Trend Strategy Handles ---
+   if(TrendStrategy.isEnabled)
+   {
+       if(TrendStrategy.atrHandle != INVALID_HANDLE) IndicatorRelease(TrendStrategy.atrHandle);
+       if(TrendStrategy.emaHandle != INVALID_HANDLE) IndicatorRelease(TrendStrategy.emaHandle);
+       for(int i=0; i<3; i++) if(TrendStrategy.htfStates[i].emaHandle != INVALID_HANDLE) IndicatorRelease(TrendStrategy.htfStates[i].emaHandle);
+   }
+   
+   // --- Release DayTrade Strategy Handles ---
+   if(DayTradeStrategy.isEnabled)
+   {
+       if(DayTradeStrategy.atrHandle != INVALID_HANDLE) IndicatorRelease(DayTradeStrategy.atrHandle);
+       if(DayTradeStrategy.emaHandle != INVALID_HANDLE) IndicatorRelease(DayTradeStrategy.emaHandle);
+       for(int i=0; i<3; i++) if(DayTradeStrategy.htfStates[i].emaHandle != INVALID_HANDLE) IndicatorRelease(DayTradeStrategy.htfStates[i].emaHandle);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -268,20 +426,46 @@ void OnTick()
       if(isTradingStoppedForDay || isTradingStoppedForWeek) return;
    }
      
-   // Always analyze HTF market structure
-   for(int i=0; i < ArraySize(HtfStates); i++){ datetime newHtfBarTime = (datetime)SeriesInfoInteger(_Symbol, HtfStates[i].timeframe, SERIES_LASTBAR_DATE);
-   if(newHtfBarTime != HtfStates[i].lastBarTime) { HtfStates[i].lastBarTime = newHtfBarTime; AnalyzeHtfMarketStructure(HtfStates[i]); } }
-   
-   // --- CORE LOGIC FLOW ---
-   // On a new LTF bar, check for trend continuation setups
-   static datetime lastLtfBarTime = 0;
-   datetime newLtfBarTime = (datetime)SeriesInfoInteger(_Symbol, _Period, SERIES_LASTBAR_DATE);
-   if(newLtfBarTime != lastLtfBarTime)
+   // --- STRATEGY-SPECIFIC LOGIC ---
+   if(TrendStrategy.isEnabled)
    {
-       lastLtfBarTime = newLtfBarTime;
-       if(EnableTrendStrategy)
+       // Analyze this strategy's HTFs
+       for(int i=0; i < (int)TrendStrategy.numberOfHtfs; i++)
        {
-           AnalyzeLtfTrendContinuation();
+           datetime newHtfBarTime = (datetime)SeriesInfoInteger(_Symbol, TrendStrategy.htfStates[i].timeframe, SERIES_LASTBAR_DATE);
+           if(newHtfBarTime != TrendStrategy.htfStates[i].lastBarTime)
+           {
+               TrendStrategy.htfStates[i].lastBarTime = newHtfBarTime;
+               AnalyzeHtfMarketStructure(TrendStrategy.htfStates[i]);
+           }
+       }
+       // Check for new bar on entry timeframe and run its logic
+       datetime newBarTime = (datetime)SeriesInfoInteger(_Symbol, TrendStrategy.entryTimeframe, SERIES_LASTBAR_DATE);
+       if(newBarTime != TrendStrategy.lastBarTime)
+       {
+           TrendStrategy.lastBarTime = newBarTime;
+           AnalyzeStrategyContinuation(TrendStrategy);
+       }
+   }
+   
+   if(DayTradeStrategy.isEnabled)
+   {
+       // Analyze this strategy's HTFs
+       for(int i=0; i < (int)DayTradeStrategy.numberOfHtfs; i++)
+       {
+           datetime newHtfBarTime = (datetime)SeriesInfoInteger(_Symbol, DayTradeStrategy.htfStates[i].timeframe, SERIES_LASTBAR_DATE);
+           if(newHtfBarTime != DayTradeStrategy.htfStates[i].lastBarTime)
+           {
+               DayTradeStrategy.htfStates[i].lastBarTime = newHtfBarTime;
+               AnalyzeHtfMarketStructure(DayTradeStrategy.htfStates[i]);
+           }
+       }
+       // Check for new bar on entry timeframe and run its logic
+       datetime newBarTime = (datetime)SeriesInfoInteger(_Symbol, DayTradeStrategy.entryTimeframe, SERIES_LASTBAR_DATE);
+       if(newBarTime != DayTradeStrategy.lastBarTime)
+       {
+           DayTradeStrategy.lastBarTime = newBarTime;
+           AnalyzeStrategyContinuation(DayTradeStrategy);
        }
    }
 }
@@ -299,94 +483,94 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
 //+------------------------------------------------------------------+
 //| STRATEGY LOGIC                                                   |
 //+------------------------------------------------------------------+
-void AnalyzeLtfTrendContinuation()
+void AnalyzeStrategyContinuation(StrategyContext &context)
 { 
-   MqlRates rates[]; if(CopyRates(_Symbol, _Period, 0, 5, rates) < 5) return; ArraySetAsSeries(rates, true);
+   MqlRates rates[]; if(CopyRates(_Symbol, context.entryTimeframe, 0, 5, rates) < 5) return; ArraySetAsSeries(rates, true);
    MqlRates pivot_bar = rates[2];
-   double currentAtr = GetAtrValue(); if(currentAtr == 0) return;
+   double currentAtr = GetAtrValue(context.atrHandle); if(currentAtr == 0) return;
    
-   if(CurrentState == TRACKING_IMPULSE){ if(CurrentTrend == UP){ if(pivot_bar.high > CurrentImpulseHigh.price) { CurrentImpulseHigh.price = pivot_bar.high;
-   CurrentImpulseHigh.time = pivot_bar.time;
-   } if(IsUpTrendPullback(0) && pivot_bar.time > lastTradeSetupTime) { double pullbackDepth = (CurrentImpulseHigh.price - pivot_bar.low);
-   if(pullbackDepth >= MinPullbackAtrMult * currentAtr){ CurrentPullbackLow.price = pivot_bar.low; CurrentPullbackLow.time = pivot_bar.time; lastTradeSetupTime = pivot_bar.time; CurrentState = AWAITING_CONTINUATION; if(IsValidPullbackStructure(2, UP)) PlaceTrendTrade();
-   } } } else if(CurrentTrend == DOWN){ if(pivot_bar.low < CurrentImpulseLow.price) { CurrentImpulseLow.price = pivot_bar.low; CurrentImpulseLow.time = pivot_bar.time;
-   } if(IsDownTrendPullback(0) && pivot_bar.time > lastTradeSetupTime){ double pullbackDepth = (pivot_bar.high - CurrentImpulseLow.price); if(pullbackDepth >= MinPullbackAtrMult * currentAtr){ CurrentPullbackHigh.price = pivot_bar.high;
-   CurrentPullbackHigh.time = pivot_bar.time; lastTradeSetupTime = pivot_bar.time; CurrentState = AWAITING_CONTINUATION; if(IsValidPullbackStructure(2, DOWN)) PlaceTrendTrade();
-   } } } } else if(CurrentState == AWAITING_CONTINUATION){ if(CurrentTrend == UP){ if(pivot_bar.low < CurrentPullbackLow.price) { CurrentPullbackLow.price = pivot_bar.low;
-   CurrentPullbackLow.time = pivot_bar.time; } if(pivot_bar.low < SwingLowAnchor.price){ CancelPendingOrders(MagicNumber_Trend); CurrentTrend = DOWN; SwingHighAnchor = CurrentImpulseHigh; CurrentImpulseLow.price = pivot_bar.low; CurrentImpulseLow.time = pivot_bar.time;
-   CurrentState = TRACKING_IMPULSE; lastTradeSetupTime = 0; return; } else if(pivot_bar.high > CurrentImpulseHigh.price){ TrailEarlyStopsToNewSwing(CurrentPullbackLow.price, UP); CancelPendingOrders(MagicNumber_Trend); SwingLowAnchor = CurrentPullbackLow;
-   CurrentImpulseHigh.price = pivot_bar.high; CurrentImpulseHigh.time = pivot_bar.time; CurrentState = TRACKING_IMPULSE; lastTradeSetupTime = 0; return;
-   } if(IsUpTrendPullback(0) && pivot_bar.time > lastTradeSetupTime){ double pullbackDepth = (CurrentImpulseHigh.price - pivot_bar.low); if(pullbackDepth >= MinPullbackAtrMult * currentAtr){ if(IsValidPullbackStructure(2, UP)) PlaceTrendTrade();
-   lastTradeSetupTime = pivot_bar.time; } } } else if(CurrentTrend == DOWN){ if(pivot_bar.high > CurrentPullbackHigh.price) { CurrentPullbackHigh.price = pivot_bar.high; CurrentPullbackHigh.time = pivot_bar.time;
-   } if(pivot_bar.high > SwingHighAnchor.price){ CancelPendingOrders(MagicNumber_Trend); CurrentTrend = UP; SwingLowAnchor = CurrentImpulseLow; CurrentImpulseHigh.price = pivot_bar.high; CurrentImpulseHigh.time = pivot_bar.time; CurrentState = TRACKING_IMPULSE;
-   lastTradeSetupTime = 0; return; } else if(pivot_bar.low < CurrentImpulseLow.price){ TrailEarlyStopsToNewSwing(CurrentPullbackHigh.price, DOWN); CancelPendingOrders(MagicNumber_Trend); SwingHighAnchor = CurrentPullbackHigh; CurrentImpulseLow.price = pivot_bar.low;
-   CurrentImpulseLow.time = pivot_bar.time; CurrentState = TRACKING_IMPULSE; lastTradeSetupTime = 0; return;
-   } if(IsDownTrendPullback(0) && pivot_bar.time > lastTradeSetupTime){ double pullbackDepth = (pivot_bar.high - CurrentImpulseLow.price); if(pullbackDepth >= MinPullbackAtrMult * currentAtr){ if(IsValidPullbackStructure(2, DOWN)) PlaceTrendTrade();
-   lastTradeSetupTime = pivot_bar.time; } } } } }
+   if(context.currentState == TRACKING_IMPULSE){ if(context.currentTrend == UP){ if(pivot_bar.high > context.currentImpulseHigh.price) { context.currentImpulseHigh.price = pivot_bar.high;
+   context.currentImpulseHigh.time = pivot_bar.time;
+   } if(IsUpTrendPullback(0, context) && pivot_bar.time > context.lastTradeSetupTime) { double pullbackDepth = (context.currentImpulseHigh.price - pivot_bar.low);
+   if(pullbackDepth >= context.minPullbackAtrMult * currentAtr){ context.currentPullbackLow.price = pivot_bar.low; context.currentPullbackLow.time = pivot_bar.time; context.lastTradeSetupTime = pivot_bar.time; context.currentState = AWAITING_CONTINUATION; if(IsValidPullbackStructure(2, UP, context)) PlaceStrategyTrade(context);
+   } } } else if(context.currentTrend == DOWN){ if(pivot_bar.low < context.currentImpulseLow.price) { context.currentImpulseLow.price = pivot_bar.low; context.currentImpulseLow.time = pivot_bar.time;
+   } if(IsDownTrendPullback(0, context) && pivot_bar.time > context.lastTradeSetupTime){ double pullbackDepth = (pivot_bar.high - context.currentImpulseLow.price); if(pullbackDepth >= context.minPullbackAtrMult * currentAtr){ context.currentPullbackHigh.price = pivot_bar.high;
+   context.currentPullbackHigh.time = pivot_bar.time; context.lastTradeSetupTime = pivot_bar.time; context.currentState = AWAITING_CONTINUATION; if(IsValidPullbackStructure(2, DOWN, context)) PlaceStrategyTrade(context);
+   } } } } else if(context.currentState == AWAITING_CONTINUATION){ if(context.currentTrend == UP){ if(pivot_bar.low < context.currentPullbackLow.price) { context.currentPullbackLow.price = pivot_bar.low;
+   context.currentPullbackLow.time = pivot_bar.time; } if(pivot_bar.low < context.swingLowAnchor.price){ CancelPendingOrders(context.magicNumber); context.currentTrend = DOWN; context.swingHighAnchor = context.currentImpulseHigh; context.currentImpulseLow.price = pivot_bar.low; context.currentImpulseLow.time = pivot_bar.time;
+   context.currentState = TRACKING_IMPULSE; context.lastTradeSetupTime = 0; return; } else if(pivot_bar.high > context.currentImpulseHigh.price){ TrailEarlyStopsToNewSwing(context.currentPullbackLow.price, UP, context); CancelPendingOrders(context.magicNumber); context.swingLowAnchor = context.currentPullbackLow;
+   context.currentImpulseHigh.price = pivot_bar.high; context.currentImpulseHigh.time = pivot_bar.time; context.currentState = TRACKING_IMPULSE; context.lastTradeSetupTime = 0; return;
+   } if(IsUpTrendPullback(0, context) && pivot_bar.time > context.lastTradeSetupTime){ double pullbackDepth = (context.currentImpulseHigh.price - pivot_bar.low); if(pullbackDepth >= context.minPullbackAtrMult * currentAtr){ if(IsValidPullbackStructure(2, UP, context)) PlaceStrategyTrade(context);
+   context.lastTradeSetupTime = pivot_bar.time; } } } else if(context.currentTrend == DOWN){ if(pivot_bar.high > context.currentPullbackHigh.price) { context.currentPullbackHigh.price = pivot_bar.high; context.currentPullbackHigh.time = pivot_bar.time;
+   } if(pivot_bar.high > context.swingHighAnchor.price){ CancelPendingOrders(context.magicNumber); context.currentTrend = UP; context.swingLowAnchor = context.currentImpulseLow; context.currentImpulseHigh.price = pivot_bar.high; context.currentImpulseHigh.time = pivot_bar.time; context.currentState = TRACKING_IMPULSE;
+   context.lastTradeSetupTime = 0; return; } else if(pivot_bar.low < context.currentImpulseLow.price){ TrailEarlyStopsToNewSwing(context.currentPullbackHigh.price, DOWN, context); CancelPendingOrders(context.magicNumber); context.swingHighAnchor = context.currentPullbackHigh; context.currentImpulseLow.price = pivot_bar.low;
+   context.currentImpulseLow.time = pivot_bar.time; context.currentState = TRACKING_IMPULSE; context.lastTradeSetupTime = 0; return;
+   } if(IsDownTrendPullback(0, context) && pivot_bar.time > context.lastTradeSetupTime){ double pullbackDepth = (pivot_bar.high - context.currentImpulseLow.price); if(pullbackDepth >= context.minPullbackAtrMult * currentAtr){ if(IsValidPullbackStructure(2, DOWN, context)) PlaceStrategyTrade(context);
+   context.lastTradeSetupTime = pivot_bar.time; } } } } }
 
-void PlaceTrendTrade()
+void PlaceStrategyTrade(StrategyContext &context)
 { 
-   double totalRiskPercent = (EnableAdaptiveRisk && IsPrimeSetup()) ?
-   PrimeRiskPercentage : RiskPerEntryPercent;
-   if(!PerformPreFlightChecks(totalRiskPercent)) return;
+   double totalRiskPercent = (EnableAdaptiveRisk && IsPrimeSetup(context)) ?
+   PrimeRiskPercentage : context.riskPerEntryPercent;
+   if(!PerformPreFlightChecks(totalRiskPercent, context)) return;
    
    if(!IsVolatilityFavorable()) return; 
-   double adaptiveTakeProfitRR = Trend_BaseTakeProfitRR; double adaptiveSlAtrMult = Trend_BaseSlAtrMult;
-   if(EnableVolatilityEngine){ switch(CurrentVolatilityRegime){ case VOL_LOW: adaptiveTakeProfitRR *= Trend_LowVolRRMultiplier; break; case VOL_HIGH: adaptiveTakeProfitRR *= Trend_HighVolRRMultiplier; adaptiveSlAtrMult *= Trend_HighVolSlAtrMultiplier; break; case VOL_EXTREME: return;
+   double adaptiveTakeProfitRR = context.baseTakeProfitRR; double adaptiveSlAtrMult = context.baseSlAtrMult;
+   if(EnableVolatilityEngine){ switch(CurrentVolatilityRegime){ case VOL_LOW: adaptiveTakeProfitRR *= context.lowVolRRMultiplier; break; case VOL_HIGH: adaptiveTakeProfitRR *= context.highVolRRMultiplier; adaptiveSlAtrMult *= context.highVolSlAtrMultiplier; break; case VOL_EXTREME: return;
    } } 
-   if(!EnableMultiHtfFilter || NumberOfHtfs < HTF_COUNT_1) return; 
-   ENUM_TREND requiredTrend = NO_TREND; TimeframeState htf1 = HtfStates[0];
-   if(htf1.currentTrend == UP && IsPriceAlignedWithEma(htf1.timeframe, htf1.emaHandle, UP, Htf_EnableEmaFilter_Inputs[0])) requiredTrend = UP;
-   else if(htf1.currentTrend == DOWN && IsPriceAlignedWithEma(htf1.timeframe, htf1.emaHandle, DOWN, Htf_EnableEmaFilter_Inputs[0])) requiredTrend = DOWN; 
+   if(!context.enableMultiHtfFilter || context.numberOfHtfs < HTF_COUNT_1) return; 
+   ENUM_TREND requiredTrend = NO_TREND; TimeframeState htf1 = context.htfStates[0];
+   if(htf1.currentTrend == UP && IsPriceAlignedWithEma(htf1.timeframe, htf1.emaHandle, UP, context.htfEnableEmaFilter[0])) requiredTrend = UP;
+   else if(htf1.currentTrend == DOWN && IsPriceAlignedWithEma(htf1.timeframe, htf1.emaHandle, DOWN, context.htfEnableEmaFilter[0])) requiredTrend = DOWN; 
    if(requiredTrend == NO_TREND) return;
-   for(int i = 1; i < (int)NumberOfHtfs; i++){ if(HtfStates[i].currentTrend != requiredTrend || !IsPriceAlignedWithEma(HtfStates[i].timeframe, HtfStates[i].emaHandle, requiredTrend, Htf_EnableEmaFilter_Inputs[i])) return;
+   for(int i = 1; i < (int)context.numberOfHtfs; i++){ if(context.htfStates[i].currentTrend != requiredTrend || !IsPriceAlignedWithEma(context.htfStates[i].timeframe, context.htfStates[i].emaHandle, requiredTrend, context.htfEnableEmaFilter[i])) return;
    } 
-   if(CurrentTrend != requiredTrend || !IsPriceAlignedWithEma(_Period, ltfEmaHandle, requiredTrend, EnableEmaFilter)) return; 
+   if(context.currentTrend != requiredTrend || !IsPriceAlignedWithEma(context.entryTimeframe, context.emaHandle, requiredTrend, context.enableEmaFilter)) return; 
    
-   trade.SetExpertMagicNumber(MagicNumber_Trend);
+   trade.SetExpertMagicNumber(context.magicNumber);
    double stopLoss=0, takeProfit=0, range_val=0;
-   double stopLossBuffer = GetAtrValue() * adaptiveSlAtrMult;
+   double stopLossBuffer = GetAtrValue(context.atrHandle) * adaptiveSlAtrMult;
    double retracements[] = {0.61, 0.705, 0.75}; double weights[] = {0.6, 0.3, 0.1};
    
-   if(CurrentTrend == UP)
+   if(context.currentTrend == UP)
    { 
       if(!AllowHedging && HasOppositePosition(ORDER_TYPE_BUY)) return;
-      range_val = CurrentImpulseHigh.price - SwingLowAnchor.price; if(range_val <= 0) return; 
-      stopLoss = SwingLowAnchor.price - stopLossBuffer; 
-      UpdatePendingOrders(stopLoss, MagicNumber_Trend, adaptiveTakeProfitRR);
+      range_val = context.currentImpulseHigh.price - context.swingLowAnchor.price; if(range_val <= 0) return; 
+      stopLoss = context.swingLowAnchor.price - stopLossBuffer; 
+      UpdatePendingOrders(stopLoss, context.magicNumber, adaptiveTakeProfitRR);
       for(int i = 0; i < ArraySize(retracements); i++)
       { 
-         double entryPrice = CurrentImpulseHigh.price - (range_val * retracements[i]);
+         double entryPrice = context.currentImpulseHigh.price - (range_val * retracements[i]);
          double riskDistance = entryPrice - stopLoss; if(riskDistance <= 0) continue; 
          takeProfit = entryPrice + (riskDistance * adaptiveTakeProfitRR);
          double thisRiskPercent = totalRiskPercent * weights[i]; 
          double lotSize = CalculateLotSize(stopLoss, entryPrice, thisRiskPercent);
          if(lotSize > 0 && entryPrice < SymbolInfoDouble(_Symbol, SYMBOL_ASK)) 
          {
-            if(!IsMarginSufficient(lotSize, ORDER_TYPE_BUY_LIMIT)) { Print("Trend: Insufficient margin for limit order, skipping.");
+            if(!IsMarginSufficient(lotSize, ORDER_TYPE_BUY_LIMIT)) { Print(EnumToString(context.entryTimeframe), ": Insufficient margin for limit order, skipping.");
             continue; }
-            ExecutePendingOrder(ORDER_TYPE_BUY_LIMIT, lotSize, entryPrice, stopLoss, takeProfit, "");
+            ExecutePendingOrder(ORDER_TYPE_BUY_LIMIT, lotSize, entryPrice, stopLoss, takeProfit, "", context.magicNumber);
          }
       } 
    } 
-   else if(CurrentTrend == DOWN)
+   else if(context.currentTrend == DOWN)
    { 
       if(!AllowHedging && HasOppositePosition(ORDER_TYPE_SELL)) return;
-      range_val = SwingHighAnchor.price - CurrentImpulseLow.price; if(range_val <= 0) return;
-      stopLoss = SwingHighAnchor.price + stopLossBuffer; 
-      UpdatePendingOrders(stopLoss, MagicNumber_Trend, adaptiveTakeProfitRR);
+      range_val = context.swingHighAnchor.price - context.currentImpulseLow.price; if(range_val <= 0) return;
+      stopLoss = context.swingHighAnchor.price + stopLossBuffer; 
+      UpdatePendingOrders(stopLoss, context.magicNumber, adaptiveTakeProfitRR);
       for(int i = 0; i < ArraySize(retracements); i++)
       { 
-         double entryPrice = CurrentImpulseLow.price + (range_val * retracements[i]);
+         double entryPrice = context.currentImpulseLow.price + (range_val * retracements[i]);
          double riskDistance = stopLoss - entryPrice; if(riskDistance <= 0) continue; 
          takeProfit = entryPrice - (riskDistance * adaptiveTakeProfitRR);
          double thisRiskPercent = totalRiskPercent * weights[i]; 
          double lotSize = CalculateLotSize(stopLoss, entryPrice, thisRiskPercent);
          if(lotSize > 0 && entryPrice > SymbolInfoDouble(_Symbol, SYMBOL_BID))
          {
-            if(!IsMarginSufficient(lotSize, ORDER_TYPE_SELL_LIMIT)) { Print("Trend: Insufficient margin for limit order, skipping.");
+            if(!IsMarginSufficient(lotSize, ORDER_TYPE_SELL_LIMIT)) { Print(EnumToString(context.entryTimeframe), ": Insufficient margin for limit order, skipping.");
             continue; }
-            ExecutePendingOrder(ORDER_TYPE_SELL_LIMIT, lotSize, entryPrice, stopLoss, takeProfit, "");
+            ExecutePendingOrder(ORDER_TYPE_SELL_LIMIT, lotSize, entryPrice, stopLoss, takeProfit, "", context.magicNumber);
          } 
       } 
    } 
@@ -404,7 +588,9 @@ void AnalyzeHtfMarketStructure(TimeframeState &state)
 void ManageOpenPositions(){ SyncManagedPositions();
    for(int i = 0; i < ArraySize(ManagedPositions); i++){ if(!PositionSelectByTicket(ManagedPositions[i].ticket)) continue;
    long magic = PositionGetInteger(POSITION_MAGIC);
-   if(magic != MagicNumber_Trend) continue; double currentProfitPoints = 0; long positionType = PositionGetInteger(POSITION_TYPE); double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+   if(magic != MagicNumber_Trend && magic != MagicNumber_DayTrade) continue; 
+   
+   double currentProfitPoints = 0; long positionType = PositionGetInteger(POSITION_TYPE); double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
    double currentPrice = (positionType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    if(positionType == POSITION_TYPE_BUY) currentProfitPoints = (currentPrice - openPrice) / _Point; else currentProfitPoints = (openPrice - currentPrice) / _Point;
    double currentRR = (ManagedPositions[i].initialRiskPoints > 0) ? currentProfitPoints / ManagedPositions[i].initialRiskPoints : 0;
@@ -417,7 +603,7 @@ void ManageOpenPositions(){ SyncManagedPositions();
 }
 
 void SyncManagedPositions(){ for(int i = 0; i < PositionsTotal(); i++){ ulong ticket = PositionGetTicket(i);
-   if(PositionSelectByTicket(ticket)){ long magic = PositionGetInteger(POSITION_MAGIC); if(magic == MagicNumber_Trend && PositionGetString(POSITION_SYMBOL) == _Symbol){ bool isTracked = false;
+   if(PositionSelectByTicket(ticket)){ long magic = PositionGetInteger(POSITION_MAGIC); if((magic == MagicNumber_Trend || magic == MagicNumber_DayTrade) && PositionGetString(POSITION_SYMBOL) == _Symbol){ bool isTracked = false;
    for(int j = 0; j < ArraySize(ManagedPositions); j++) if(ManagedPositions[j].ticket == ticket) isTracked = true;
    if(!isTracked){ int newSize = ArraySize(ManagedPositions) + 1; ArrayResize(ManagedPositions, newSize); ManagedPositions[newSize-1].ticket = ticket; ManagedPositions[newSize-1].entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
    ManagedPositions[newSize-1].initialRiskPoints = MathAbs(ManagedPositions[newSize-1].entryPrice - PositionGetDouble(POSITION_SL)) / _Point; ManagedPositions[newSize-1].managementPhase = PHASE_INITIAL;
@@ -428,7 +614,7 @@ void UpdateDashboard(){ static datetime last_update = 0; if(TimeCurrent() - last
    last_update = TimeCurrent(); string status_text; color status_color; if(isTradingStoppedForWeek) { status_text = "STOPPED (WEEKLY)"; status_color = clrRed;
    } else if(isTradingStoppedForDay) { status_text = "STOPPED (DAILY)"; status_color = clrRed; } else { status_text = "ACTIVE"; status_color = clrLimeGreen;
    } 
-   int y_pos = 15, y_step = 16; DrawDashboardLabel("Title", 15, y_pos, "MAIshe (Trend Only)", clrWhite, 10);
+   int y_pos = 15, y_step = 16; DrawDashboardLabel("Title", 15, y_pos, "MAIshe (Dual Strategy)", clrWhite, 10);
    y_pos += y_step + 5;
    DrawDashboardLabel("Status", 15, y_pos, "Status: " + status_text, status_color); y_pos += y_step;
    ChartRedraw(0);
@@ -452,15 +638,18 @@ void CheckProfitLossLimits(){ datetime now = TimeCurrent();
    return; } }
 double CalculateProfitForPeriod(datetime startTime){ HistorySelect(startTime, TimeCurrent()); double totalProfit = 0;
    for(int i = 0; i < HistoryDealsTotal(); i++){ ulong ticket = HistoryDealGetTicket(i); long magic = (long)HistoryDealGetInteger(ticket, DEAL_MAGIC);
-   if(magic == MagicNumber_Trend && HistoryDealGetInteger(ticket, DEAL_ENTRY) == DEAL_ENTRY_OUT) totalProfit += HistoryDealGetDouble(ticket, DEAL_PROFIT);
+   if((magic == MagicNumber_Trend || magic == MagicNumber_DayTrade) && HistoryDealGetInteger(ticket, DEAL_ENTRY) == DEAL_ENTRY_OUT) totalProfit += HistoryDealGetDouble(ticket, DEAL_PROFIT);
    } for(int i = PositionsTotal() - 1; i >= 0; i--){ if(PositionSelectByTicket(PositionGetTicket(i))){ long magic = PositionGetInteger(POSITION_MAGIC);
-   if(magic == MagicNumber_Trend) totalProfit += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP); } } return totalProfit;
+   if(magic == MagicNumber_Trend || magic == MagicNumber_DayTrade) totalProfit += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP); } } return totalProfit;
    }
 void CloseAllAndStopTrading(bool stopForWeek){ if(stopForWeek) isTradingStoppedForWeek = true;
-   isTradingStoppedForDay = true; CancelPendingOrders(MagicNumber_Trend);
+   isTradingStoppedForDay = true; 
+   CancelPendingOrders(MagicNumber_Trend);
+   CancelPendingOrders(MagicNumber_DayTrade);
    for(int i = PositionsTotal() - 1; i >= 0; i--){ ulong ticket = PositionGetTicket(i);
    if(PositionSelectByTicket(ticket)){ long magic = PositionGetInteger(POSITION_MAGIC);
-   if(magic == MagicNumber_Trend) trade.PositionClose(ticket); } } }
+   if(magic == MagicNumber_Trend || magic == MagicNumber_DayTrade) trade.PositionClose(ticket); } } }
+   
 void UpdateVolatilityRegime(){ if(!EnableVolatilityEngine || !isVolatilityFilterActive) return; double short_atr_buffer[], long_atr_buffer[];
    if(CopyBuffer(shortAtrOnHtfHandle, 0, 1, 1, short_atr_buffer) < 1 || CopyBuffer(longAtrHandle, 0, 1, 1, long_atr_buffer) < 1 || long_atr_buffer[0] <= 0){ currentVolatilityIndex = 1.0;
    CurrentVolatilityRegime = VOL_NORMAL; return; } currentVolatilityIndex = short_atr_buffer[0] / long_atr_buffer[0]; ENUM_VOLATILITY_REGIME previousRegime = CurrentVolatilityRegime; if(currentVolatilityIndex < Volatility_LowThreshold) CurrentVolatilityRegime = VOL_LOW;
@@ -476,29 +665,28 @@ void InitializeHtfStateFromHistory(TimeframeState &state)
    ProcessMarketStructure(state, htf_rates, barsToScan, false);
 }
 
-void InitializeStateFromHistory()
+void InitializeStrategyStateFromHistory(StrategyContext &context)
 {
    MqlRates rates[];
-   int barsToScan = MathMin(Bars(_Symbol, _Period), HistoryScanBars);
-   if(CopyRates(_Symbol, _Period, 0, barsToScan, rates) < 100) return;
+   int barsToScan = MathMin(Bars(_Symbol, context.entryTimeframe), HistoryScanBars);
+   if(CopyRates(_Symbol, context.entryTimeframe, 0, barsToScan, rates) < 100) return;
 
    TimeframeState ltfState;
-   ltfState.timeframe = _Period;
+   ltfState.timeframe = context.entryTimeframe;
 
-   ProcessMarketStructure(ltfState, rates, barsToScan, true);
+   ProcessMarketStructure(ltfState, rates, barsToScan, true, (context.magicNumber == MagicNumber_Trend ? "T_" : "D_"));
 
-   CurrentTrend = ltfState.currentTrend;
-   CurrentState = ltfState.currentState;
-   SwingLowAnchor = ltfState.swingLowAnchor;
-   SwingHighAnchor = ltfState.swingHighAnchor;
-   CurrentImpulseHigh = ltfState.currentImpulseHigh;
-   CurrentImpulseLow = ltfState.currentImpulseLow;
-   CurrentPullbackLow = ltfState.currentPullbackLow;
-   CurrentPullbackHigh = ltfState.currentPullbackHigh;
+   context.currentTrend = ltfState.currentTrend;
+   context.currentState = ltfState.currentState;
+   context.swingLowAnchor = ltfState.swingLowAnchor;
+   context.swingHighAnchor = ltfState.swingHighAnchor;
+   context.currentImpulseHigh = ltfState.currentImpulseHigh;
+   context.currentImpulseLow = ltfState.currentImpulseLow;
+   context.currentPullbackLow = ltfState.currentPullbackLow;
+   context.currentPullbackHigh = ltfState.currentPullbackHigh;
 }
 
-// --- REPAIRED --- The 'const' keyword was removed from MqlRates &rates[] to fix the compiler error.
-void ProcessMarketStructure(TimeframeState &state, MqlRates &rates[], int barsToScan, bool isLtf)
+void ProcessMarketStructure(TimeframeState &state, MqlRates &rates[], int barsToScan, bool isLtf, string prefix = "EA_")
 {
    int tempAtrHandle = iATR(_Symbol, state.timeframe, AtrPeriod);
    if(tempAtrHandle == INVALID_HANDLE) {
@@ -583,13 +771,13 @@ void ProcessMarketStructure(TimeframeState &state, MqlRates &rates[], int barsTo
             if(bar_curr.low < state.currentPullbackLow.price) { state.currentPullbackLow.price = bar_curr.low; state.currentPullbackLow.time = bar_curr.time; }
             if(bar_curr.low < state.swingLowAnchor.price) // ChoCh
             {
-               if(isLtf) DrawChoChLine("EA_", state.swingLowAnchor.time, state.swingLowAnchor.price, bar_curr.time, state.swingLowAnchor.price, "ChoCh Down");
+               if(isLtf) DrawChoChLine(prefix, state.swingLowAnchor.time, state.swingLowAnchor.price, bar_curr.time, state.swingLowAnchor.price, "ChoCh Down");
                state.currentTrend = DOWN; state.swingHighAnchor = state.currentImpulseHigh; state.currentImpulseLow.price = bar_curr.low;
                state.currentImpulseLow.time = bar_curr.time; state.currentState = TRACKING_IMPULSE; state.lastBmsTime = bar_curr.time; state.lastChochTime = bar_curr.time;
             }
             else if(bar_curr.high > state.currentImpulseHigh.price) // BMS
             {
-               if(isLtf) DrawBMSLine("EA_", state.currentImpulseHigh.time, state.currentImpulseHigh.price, bar_curr.time, state.currentImpulseHigh.price, "BMS Up");
+               if(isLtf) DrawBMSLine(prefix, state.currentImpulseHigh.time, state.currentImpulseHigh.price, bar_curr.time, state.currentImpulseHigh.price, "BMS Up");
                state.swingLowAnchor = state.currentPullbackLow; state.currentImpulseHigh.price = bar_curr.high; state.currentImpulseHigh.time = bar_curr.time;
                state.currentState = TRACKING_IMPULSE; state.lastBmsTime = bar_curr.time;
             }
@@ -599,13 +787,13 @@ void ProcessMarketStructure(TimeframeState &state, MqlRates &rates[], int barsTo
             if(bar_curr.high > state.currentPullbackHigh.price) { state.currentPullbackHigh.price = bar_curr.high; state.currentPullbackHigh.time = bar_curr.time; }
             if(bar_curr.high > state.swingHighAnchor.price) // ChoCh
             {
-               if(isLtf) DrawChoChLine("EA_", state.swingHighAnchor.time, state.swingHighAnchor.price, bar_curr.time, state.swingHighAnchor.price, "ChoCh Up");
+               if(isLtf) DrawChoChLine(prefix, state.swingHighAnchor.time, state.swingHighAnchor.price, bar_curr.time, state.swingHighAnchor.price, "ChoCh Up");
                state.currentTrend = UP; state.swingLowAnchor = state.currentImpulseLow; state.currentImpulseHigh.price = bar_curr.high;
                state.currentImpulseHigh.time = bar_curr.time; state.currentState = TRACKING_IMPULSE; state.lastBmsTime = bar_curr.time; state.lastChochTime = bar_curr.time;
             }
             else if(bar_curr.low < state.currentImpulseLow.price) // BMS
             {
-               if(isLtf) DrawBMSLine("EA_", state.currentImpulseLow.time, state.currentImpulseLow.price, bar_curr.time, state.currentImpulseLow.price, "BMS Down");
+               if(isLtf) DrawBMSLine(prefix, state.currentImpulseLow.time, state.currentImpulseLow.price, bar_curr.time, state.currentImpulseLow.price, "BMS Down");
                state.swingHighAnchor = state.currentPullbackHigh; state.currentImpulseLow.price = bar_curr.low; state.currentImpulseLow.time = bar_curr.time;
                state.currentState = TRACKING_IMPULSE; state.lastBmsTime = bar_curr.time;
             }
@@ -620,10 +808,10 @@ void ProcessMarketStructure(TimeframeState &state, MqlRates &rates[], int barsTo
 //+------------------------------------------------------------------+
 //| HELPER FUNCTIONS                                                 |
 //+------------------------------------------------------------------+
-double GetAtrValue(){ double atr_buffer[1];
-   if(CopyBuffer(atrHandle, 0, 1, 1, atr_buffer) > 0) return atr_buffer[0]; return 0; }
+double GetAtrValue(int handle){ double atr_buffer[1];
+   if(CopyBuffer(handle, 0, 1, 1, atr_buffer) > 0) return atr_buffer[0]; return 0; }
    
-double GetAtrValueAtBar(int shift, ENUM_TIMEFRAMES tf, int handle) {
+double GetAtrValueAtBar(int shift, int handle) {
     double atr_buffer[1];
     if (CopyBuffer(handle, 0, shift + 1, 1, atr_buffer) > 0) return atr_buffer[0]; // shift+1 to get value of previous bar
     return 0;
@@ -644,58 +832,58 @@ bool HasOppositePosition(ENUM_ORDER_TYPE orderType){ bool has_buy = false, has_s
    if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) has_sell = true; } } if(orderType == ORDER_TYPE_BUY && has_sell) return true;
    if(orderType == ORDER_TYPE_SELL && has_buy) return true; return false; }
 
-bool IsPrimeSetup()
+bool IsPrimeSetup(StrategyContext &context)
 {
-    if(NumberOfHtfs < HTF_COUNT_3) return false;
-    if(HtfStates[0].currentTrend != CurrentTrend || HtfStates[1].currentTrend != CurrentTrend || HtfStates[2].currentTrend != CurrentTrend) return false;
+    if(context.numberOfHtfs < HTF_COUNT_3) return false;
+    if(context.htfStates[0].currentTrend != context.currentTrend || context.htfStates[1].currentTrend != context.currentTrend || context.htfStates[2].currentTrend != context.currentTrend) return false;
     if(CurrentVolatilityRegime != VOL_NORMAL) return false;
-    datetime lastBmsOnHtf1 = HtfStates[0].lastBmsTime;
+    datetime lastBmsOnHtf1 = context.htfStates[0].lastBmsTime;
     if(lastBmsOnHtf1 > 0)
     {
-      int barsSinceBms = iBarShift(_Symbol, _Period, lastBmsOnHtf1);
-      if(barsSinceBms < 0 || barsSinceBms > (int)(PeriodSeconds(HtfStates[0].timeframe)/PeriodSeconds(_Period)) * 3) return false;
+      int barsSinceBms = iBarShift(_Symbol, context.entryTimeframe, lastBmsOnHtf1);
+      if(barsSinceBms < 0 || barsSinceBms > (int)(PeriodSeconds(context.htfStates[0].timeframe)/PeriodSeconds(context.entryTimeframe)) * 3) return false;
     }
-    double avgBody = GetAverageBodySize(AvgBodyPeriod);
+    double avgBody = GetAverageBodySize(AvgBodyPeriod, context.entryTimeframe);
     if(avgBody <= 0) return false;
-    if(CurrentTrend == UP) { if((CurrentImpulseHigh.price - SwingLowAnchor.price) < (avgBody * ImpulseCandleMultiplier)) return false; }
-    else if(CurrentTrend == DOWN) { if((SwingHighAnchor.price - CurrentImpulseLow.price) < (avgBody * ImpulseCandleMultiplier)) return false; }
+    if(context.currentTrend == UP) { if((context.currentImpulseHigh.price - context.swingLowAnchor.price) < (avgBody * ImpulseCandleMultiplier)) return false; }
+    else if(context.currentTrend == DOWN) { if((context.swingHighAnchor.price - context.currentImpulseLow.price) < (avgBody * ImpulseCandleMultiplier)) return false; }
     return true;
 }
 
-double GetAverageBodySize(int period)
+double GetAverageBodySize(int period, ENUM_TIMEFRAMES timeframe)
 {
     MqlRates rates[];
-    if(CopyRates(_Symbol, _Period, 0, period, rates) < period) return 0.0;
+    if(CopyRates(_Symbol, timeframe, 0, period, rates) < period) return 0.0;
     double totalBodySize = 0;
     for(int i = 0; i < period; i++) { totalBodySize += MathAbs(rates[i].open - rates[i].close); }
     return totalBodySize / period;
 }
 
 
-void TrailEarlyStopsToNewSwing(double newSwingPrice, ENUM_TREND direction){ double stopLossBuffer = GetAtrValue() * Trend_BaseSlAtrMult;
-   for(int i = 0; i < ArraySize(ManagedPositions); i++){ if(PositionSelectByTicket(ManagedPositions[i].ticket) && PositionGetInteger(POSITION_MAGIC) == MagicNumber_Trend && ManagedPositions[i].managementPhase == PHASE_INITIAL){ long positionType = PositionGetInteger(POSITION_TYPE);
+void TrailEarlyStopsToNewSwing(double newSwingPrice, ENUM_TREND direction, StrategyContext &context){ double stopLossBuffer = GetAtrValue(context.atrHandle) * context.baseSlAtrMult;
+   for(int i = 0; i < ArraySize(ManagedPositions); i++){ if(PositionSelectByTicket(ManagedPositions[i].ticket) && PositionGetInteger(POSITION_MAGIC) == context.magicNumber && ManagedPositions[i].managementPhase == PHASE_INITIAL){ long positionType = PositionGetInteger(POSITION_TYPE);
    double newStopLoss = 0; if(direction == UP && positionType == POSITION_TYPE_BUY){ newStopLoss = newSwingPrice - stopLossBuffer;
    if(newStopLoss > PositionGetDouble(POSITION_SL)){ if(trade.PositionModify(ManagedPositions[i].ticket, newStopLoss, PositionGetDouble(POSITION_TP))) ManagedPositions[i].initialRiskPoints = MathAbs(ManagedPositions[i].entryPrice - newStopLoss) / _Point;
    } } else if(direction == DOWN && positionType == POSITION_TYPE_SELL){ newStopLoss = newSwingPrice + stopLossBuffer;
    if(newStopLoss < PositionGetDouble(POSITION_SL)){ if(trade.PositionModify(ManagedPositions[i].ticket, newStopLoss, PositionGetDouble(POSITION_TP))) ManagedPositions[i].initialRiskPoints = MathAbs(ManagedPositions[i].entryPrice - newStopLoss) / _Point;
    } } } } }
 
-bool IsUpTrendPullback(int shift)
+bool IsUpTrendPullback(int shift, StrategyContext &context)
 {
-    MqlRates r[]; if(CopyRates(_Symbol, _Period, shift, 5, r) < 5) return false; ArraySetAsSeries(r, true);
+    MqlRates r[]; if(CopyRates(_Symbol, context.entryTimeframe, shift, 5, r) < 5) return false; ArraySetAsSeries(r, true);
     bool isFractal = (r[2].low < r[0].low && r[2].low < r[1].low && r[2].low < r[3].low && r[2].low < r[4].low);
-    if(!isFractal || iBarShift(_Symbol, _Period, CurrentImpulseHigh.time) <= shift + 2) return false;
-    double swingAtr = GetAtrValueAtBar(shift, _Period, atrHandle); if(swingAtr <= 0) return false;
+    if(!isFractal || iBarShift(_Symbol, context.entryTimeframe, context.currentImpulseHigh.time) <= shift + 2) return false;
+    double swingAtr = GetAtrValueAtBar(shift, context.atrHandle); if(swingAtr <= 0) return false;
     double swingRange = r[1].high - r[2].low; if(swingRange < (swingAtr * SwingConfirmationAtrMult)) return false;
     return true;
 }
 
-bool IsDownTrendPullback(int shift)
+bool IsDownTrendPullback(int shift, StrategyContext &context)
 {
-    MqlRates r[]; if(CopyRates(_Symbol, _Period, shift, 5, r) < 5) return false; ArraySetAsSeries(r, true);
+    MqlRates r[]; if(CopyRates(_Symbol, context.entryTimeframe, shift, 5, r) < 5) return false; ArraySetAsSeries(r, true);
     bool isFractal = (r[2].high > r[0].high && r[2].high > r[1].high && r[2].high > r[3].high && r[2].high > r[4].high);
-    if(!isFractal || iBarShift(_Symbol, _Period, CurrentImpulseLow.time) <= shift + 2) return false;
-    double swingAtr = GetAtrValueAtBar(shift, _Period, atrHandle); if(swingAtr <= 0) return false;
+    if(!isFractal || iBarShift(_Symbol, context.entryTimeframe, context.currentImpulseLow.time) <= shift + 2) return false;
+    double swingAtr = GetAtrValueAtBar(shift, context.atrHandle); if(swingAtr <= 0) return false;
     double swingRange = r[2].high - r[1].low; if(swingRange < (swingAtr * SwingConfirmationAtrMult)) return false;
     return true;
 }
@@ -742,18 +930,19 @@ double CalculateLotSize(double stopLoss, double entryPrice, double riskPercentTo
    double lotSize = riskAmount / lossPerLot; double volumeStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP); lotSize = MathFloor(lotSize / volumeStep) * volumeStep;
    double minLots = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN); double maxLots = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX); if(lotSize < minLots) lotSize = 0.0;
    if(lotSize > maxLots) lotSize = maxLots; return lotSize; }
-int CountCurrentTrades(){ int count = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--){ if(PositionSelectByTicket(PositionGetTicket(i))){ long magic = PositionGetInteger(POSITION_MAGIC);
-   if(magic == MagicNumber_Trend){ count++;
-   } } } for(int i = OrdersTotal() - 1; i >= 0; i--){ if(OrderSelect(OrderGetTicket(i))){ long magic = OrderGetInteger(ORDER_MAGIC);
-   if(magic == MagicNumber_Trend){ count++;
+   
+int CountCurrentTrades(long magic_number){ int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--){ if(PositionSelectByTicket(PositionGetTicket(i))){ if(PositionGetInteger(POSITION_MAGIC) == magic_number){ count++;
+   } } } for(int i = OrdersTotal() - 1; i >= 0; i--){ if(OrderSelect(OrderGetTicket(i))){ if(OrderGetInteger(ORDER_MAGIC) == magic_number){ count++;
    } } } return count;}
-bool IsValidPullbackStructure(int pivotBarShift, ENUM_TREND trendDirection){ int barsToCopy = pivotBarShift + 10;
+   
+bool IsValidPullbackStructure(int pivotBarShift, ENUM_TREND trendDirection, StrategyContext &context){ int barsToCopy = pivotBarShift + 10;
    MqlRates rates[];
-   if(CopyRates(_Symbol, _Period, pivotBarShift, barsToCopy, rates) < 5) return false; ArraySetAsSeries(rates, true); int consecutiveCandles = 0;
+   if(CopyRates(_Symbol, context.entryTimeframe, pivotBarShift, barsToCopy, rates) < 5) return false; ArraySetAsSeries(rates, true); int consecutiveCandles = 0;
    for(int i = 1; i < ArraySize(rates); i++){ bool isCounterCandle = (trendDirection == UP) ?
    (rates[i].close < rates[i].open) : (rates[i].close > rates[i].open); if(isCounterCandle){ consecutiveCandles++; if(consecutiveCandles >= 3) return true; } else consecutiveCandles = 0;
    } return false; }
+   
 void DrawBMSLine(string prefix, datetime t1, double p1, datetime t2, double p2, string txt){ string name = prefix + "BMS_" + (string)t1;
    if(ObjectFind(0, name) < 0){ ObjectCreate(0, name, OBJ_TREND, 0, t1, p1, t2, p2); ObjectSetInteger(0, name, OBJPROP_COLOR, clrDodgerBlue); ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
    ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT); } }
@@ -766,11 +955,18 @@ void DrawHtfBMSLine(string prefix, datetime t1, double p1, datetime t2, double p
 void DrawHtfChoChLine(string prefix, datetime t1, double p1, datetime t2, double p2, string txt){ string name = prefix + "ChoCh_" + (string)t1;
    if(ObjectFind(0, name) < 0){ ObjectCreate(0, name, OBJ_TREND, 0, t1, p1, t2, p2); ObjectSetInteger(0, name, OBJPROP_COLOR, clrOrange); ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
    ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID); } }
-bool PerformPreFlightChecks(double newTradeRiskPercent){ if(!IsTradingTime()) return false; if(!IsSpreadOK()) return false;
-   if(CountCurrentTrades() >= MaxRunningTrades){ Print("Trade aborted: Max running trades (", MaxRunningTrades, ") reached."); return false; } if(!IsTotalRiskOK(newTradeRiskPercent)) return false;
+   
+bool PerformPreFlightChecks(double newTradeRiskPercent, StrategyContext &context){ 
+   if(!IsTradingTime(context)) return false; 
+   if(!IsSpreadOK()) return false;
+   if(CountCurrentTrades(context.magicNumber) >= context.maxRunningTrades){ Print("Trade aborted for ", EnumToString(context.entryTimeframe), ": Max running trades (", context.maxRunningTrades, ") reached."); return false; } 
+   if(!IsTotalRiskOK(newTradeRiskPercent)) return false;
    return true;
 }
-bool ExecuteMarketOrder(ENUM_ORDER_TYPE orderType, double lot, double sl, double tp, string comment){ trade.SetDeviationInPoints(MaxSlippagePoints);
+
+bool ExecuteMarketOrder(ENUM_ORDER_TYPE orderType, double lot, double sl, double tp, string comment, long magic){ 
+   trade.SetExpertMagicNumber(magic);
+   trade.SetDeviationInPoints(MaxSlippagePoints);
    for(int i = 0; i < OrderRetries; i++){ bool result = (orderType == ORDER_TYPE_BUY) ?
    trade.Buy(lot, _Symbol, 0, sl, tp, comment) : trade.Sell(lot, _Symbol, 0, sl, tp, comment);
    if(result){ Print("Market order successful. Ticket: ", trade.ResultOrder());
@@ -778,12 +974,14 @@ bool ExecuteMarketOrder(ENUM_ORDER_TYPE orderType, double lot, double sl, double
    Print("Market order failed attempt #", i+1, ". Reason: ", trade.ResultComment(), " (Code: ", retcode, ")");
    if(retcode == 10004 || retcode == 10006 || retcode == 10008){ Sleep(RetryDelayMs); continue; } else { return false;
    } } } return false; }
-bool ExecutePendingOrder(ENUM_ORDER_TYPE orderType, double lot, double entry, double sl, double tp, string comment){ if(MQLInfoInteger(MQL_TESTER) && SimulatedSlippagePoints > 0){ double slippage = SimulatedSlippagePoints * _Point;
+bool ExecutePendingOrder(ENUM_ORDER_TYPE orderType, double lot, double entry, double sl, double tp, string comment, long magic){ 
+   trade.SetExpertMagicNumber(magic);
+   if(MQLInfoInteger(MQL_TESTER) && SimulatedSlippagePoints > 0){ double slippage = SimulatedSlippagePoints * _Point;
    if(orderType == ORDER_TYPE_BUY_LIMIT) entry += slippage; if(orderType == ORDER_TYPE_SELL_LIMIT) entry -= slippage; } bool result = false;
    if(orderType == ORDER_TYPE_BUY_LIMIT) result = trade.BuyLimit(lot, entry, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment);
    if(orderType == ORDER_TYPE_SELL_LIMIT) result = trade.SellLimit(lot, entry, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment);
-   if(result){ Print("Pending order placed successfully. Ticket: ", trade.ResultOrder());
-   } else { Print("Pending order failed. Reason: ", trade.ResultComment(), " (Code: ", trade.ResultRetcode(), ")");
+   if(result){ Print("Pending order placed successfully for magic ", magic, ". Ticket: ", trade.ResultOrder());
+   } else { Print("Pending order failed for magic ", magic, ". Reason: ", trade.ResultComment(), " (Code: ", trade.ResultRetcode(), ")");
    } return result;
    }
 bool IsSpreadOK(){ double spread = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -794,16 +992,24 @@ bool IsMarginSufficient(double lots, ENUM_ORDER_TYPE orderType){ double margin_r
    if(!OrderCalcMargin(orderType, _Symbol, lots, SymbolInfoDouble(_Symbol, SYMBOL_ASK), margin_required)){ Print("Could not calculate required margin. Aborting trade."); return false;
    } if(AccountInfoDouble(ACCOUNT_MARGIN_FREE) < margin_required){ Print("Trade aborted: Insufficient free margin. Required: ", margin_required, ", Available: ", AccountInfoDouble(ACCOUNT_MARGIN_FREE)); return false;
    } return true; }
-bool IsTradingTime(){ if(!EnableTimeFilter) return true; MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
-   if(dt.hour < TradeAllowedFromHour || dt.hour >= TradeAllowedToHour){ return false; } if(BlockMinutesAfterMarketOpen > 0){ if(TimeCurrent() < (currentDayStart + (BlockMinutesAfterMarketOpen * 60))){ return false;
-   } } return true; }
+   
+bool IsTradingTime(StrategyContext &context){ 
+   if(!context.enableTimeFilter) return true; 
+   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+   if(dt.hour < context.tradeAllowedFromHour || dt.hour >= context.tradeAllowedToHour){ return false; } 
+   if(context.blockMinutesAfterMarketOpen > 0){ 
+      if(TimeCurrent() < (currentDayStart + (context.blockMinutesAfterMarketOpen * 60))){ return false;
+   } } 
+   return true; 
+}
+
 bool IsTotalRiskOK(double newTradeRiskPercent){ if(MaxTotalRiskPercent <= 0) return true; double totalRisk = 0; double accountEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    if(accountEquity <= 0) return false; for(int i = PositionsTotal() - 1; i >= 0; i--){ if(PositionSelectByTicket(PositionGetTicket(i))){ if(PositionGetString(POSITION_SYMBOL) == _Symbol){ long magic = PositionGetInteger(POSITION_MAGIC);
-   if(magic == MagicNumber_Trend){ double open_price = PositionGetDouble(POSITION_PRICE_OPEN); double sl = PositionGetDouble(POSITION_SL);
+   if(magic == MagicNumber_Trend || magic == MagicNumber_DayTrade){ double open_price = PositionGetDouble(POSITION_PRICE_OPEN); double sl = PositionGetDouble(POSITION_SL);
    double lots = PositionGetDouble(POSITION_VOLUME);
    if(sl != 0){ double riskAmount = MathAbs(open_price - sl) * lots * (SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE) / SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE));
    totalRisk += (riskAmount / accountEquity) * 100.0; } } } } } for(int i = OrdersTotal() - 1; i >= 0; i--){ if(OrderSelect(OrderGetTicket(i))){ if(OrderGetString(ORDER_SYMBOL) == _Symbol){ long magic = (long)OrderGetInteger(ORDER_MAGIC);
-   if(magic == MagicNumber_Trend){ double open_price = OrderGetDouble(ORDER_PRICE_OPEN); double sl = OrderGetDouble(ORDER_SL);
+   if(magic == MagicNumber_Trend || magic == MagicNumber_DayTrade){ double open_price = OrderGetDouble(ORDER_PRICE_OPEN); double sl = OrderGetDouble(ORDER_SL);
    double lots = OrderGetDouble(ORDER_VOLUME_INITIAL);
    if (sl != 0){ double riskAmount = MathAbs(open_price - sl) * lots * (SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE) / SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE));
    totalRisk += (riskAmount / accountEquity) * 100.0; } } } } } if(totalRisk + newTradeRiskPercent > MaxTotalRiskPercent){ Print("Trade aborted: New trade would exceed max total risk. Current Risk: ", DoubleToString(totalRisk, 2), "%, New Trade Risk: ", DoubleToString(newTradeRiskPercent,2), "%, Limit: ", MaxTotalRiskPercent, "%");
