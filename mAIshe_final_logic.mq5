@@ -1,11 +1,12 @@
 //+------------------------------------------------------------------+
-//|  mAIshe V25.1 (DayTrade Time Filter)                             |
+//|  mAIshe V26.2 (Final Warning Fixes)                              |
 //|                      Copyright 2025, The Pro Trader              |
-//|  - Time & Session filters now apply only to Day Trading Strategy |
+//|  - Corrected all remaining compiler warnings                     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, The Pro Trader"
-#property link      ""
-#property version   "25.1" // Time filters are now strategy-specific
+#property link      "https://www.forexfactory.com"
+#property version   "26.2" // Final compiler warning fixes
+#property strict
 
 #include <Trade/Trade.mqh>
 #include <Trade/AccountInfo.mqh>
@@ -21,6 +22,7 @@ enum ENUM_HTF_COUNT
    HTF_COUNT_2 = 2,
    HTF_COUNT_3 = 3
 };
+enum ENUM_IMPACT_LEVEL { IMPACT_HIGH, IMPACT_MEDIUM, IMPACT_LOW, IMPACT_ANY };
 
 //--- EA Inputs
 input group "Global Trade Settings"
@@ -114,6 +116,15 @@ input bool   DayTrade_EnableTimeFilter            = true;
 input int    DayTrade_TradeAllowedFromHour        = 1;          // Server hour to start trading
 input int    DayTrade_TradeAllowedToHour          = 23;         // Server hour to stop trading
 input int    DayTrade_BlockMinutesAfterMarketOpen = 15;         // Don't trade for N minutes after daily bar open
+//---
+input group "DayTrade :: News Filter"
+input bool   DayTrade_EnableNewsFilter          = true;
+input int    DayTrade_MinutesBeforeNewsStop     = 30;
+input int    DayTrade_MinutesAfterNewsResume    = 30;
+input bool   DayTrade_FilterHighImpact          = true;
+input bool   DayTrade_FilterMediumImpact        = false;
+input bool   DayTrade_FilterLowImpact           = false;
+input string DayTrade_NewsURL                   = "https://www.forexfactory.com/calendar";
 //---
 input group "DayTrade :: Multi-Timeframe Confluence"
 input bool   DayTrade_EnableMultiHtfFilter = true;
@@ -232,6 +243,14 @@ struct StrategyContext
     int               tradeAllowedToHour;
     int               blockMinutesAfterMarketOpen;
     
+    // News Filter Settings
+    bool              enableNewsFilter;
+    int               minutesBeforeNewsStop;
+    int               minutesAfterNewsResume;
+    bool              filterHighImpact;
+    bool              filterMediumImpact;
+    bool              filterLowImpact;
+
     // Independent HTF configuration and state
     bool              enableMultiHtfFilter;
     ENUM_HTF_COUNT    numberOfHtfs;
@@ -272,8 +291,18 @@ struct ManagedPosition
    ENUM_MANAGE_PHASE managementPhase;
 };
 
+struct NewsEvent
+{
+   datetime time;
+   string currency;
+   ENUM_IMPACT_LEVEL impact;
+   string title;
+};
+
 //--- State Variables
 ManagedPosition        ManagedPositions[];
+NewsEvent              UpcomingNews[];
+datetime               lastNewsFetchTime = 0;
 ENUM_VOLATILITY_REGIME CurrentVolatilityRegime = VOL_NORMAL;
 double                 currentVolatilityIndex  = 1.0;
 datetime               currentDayStart;
@@ -283,6 +312,8 @@ double                 startOfWeekBalance;
 bool                   isTradingStoppedForDay  = false;
 bool                   isTradingStoppedForWeek = false;
 bool                   isVolatilityFilterActive = true;
+bool                   isNewsBlockActive = false;
+
 
 //--- Strategy Context Instances
 StrategyContext TrendStrategy;
@@ -310,8 +341,8 @@ int OnInit()
    }
 
    // --- Initialize Strategy Contexts ---
-   InitializeStrategyContext(TrendStrategy, EnableTrendStrategy, MagicNumber_Trend, Trend_Timeframe, Trend_RiskPerEntryPercent, Trend_MaxRunningTrades, Trend_BaseTakeProfitRR, Trend_BaseSlAtrMult, Trend_MinPullbackAtrMult, Trend_EnableEmaFilter, Trend_EmaFilterPeriod, Trend_EmaFilterMethod, Trend_EmaFilterPrice, false, 0, 0, 0, Trend_EnableMultiHtfFilter, Trend_NumberOfHtfs, Trend_Htf1_Timeframe, Trend_Htf2_Timeframe, Trend_Htf3_Timeframe, Trend_Htf1_EnableEmaFilter, Trend_Htf2_EnableEmaFilter, Trend_Htf3_EnableEmaFilter, Trend_Htf1_EmaPeriod, Trend_Htf2_EmaPeriod, Trend_Htf3_EmaPeriod, Trend_Htf1_EmaMethod, Trend_Htf2_EmaMethod, Trend_Htf3_EmaMethod, Trend_Htf1_EmaPrice, Trend_Htf2_EmaPrice, Trend_Htf3_EmaPrice, Trend_LowVolRRMultiplier, Trend_HighVolRRMultiplier, Trend_HighVolSlAtrMultiplier);
-   InitializeStrategyContext(DayTradeStrategy, EnableDayTradingStrategy, MagicNumber_DayTrade, DayTrade_Timeframe, DayTrade_RiskPerEntryPercent, DayTrade_MaxRunningTrades, DayTrade_BaseTakeProfitRR, DayTrade_BaseSlAtrMult, DayTrade_MinPullbackAtrMult, DayTrade_EnableEmaFilter, DayTrade_EmaFilterPeriod, DayTrade_EmaFilterMethod, DayTrade_EmaFilterPrice, DayTrade_EnableTimeFilter, DayTrade_TradeAllowedFromHour, DayTrade_TradeAllowedToHour, DayTrade_BlockMinutesAfterMarketOpen, DayTrade_EnableMultiHtfFilter, DayTrade_NumberOfHtfs, DayTrade_Htf1_Timeframe, DayTrade_Htf2_Timeframe, DayTrade_Htf3_Timeframe, DayTrade_Htf1_EnableEmaFilter, DayTrade_Htf2_EnableEmaFilter, DayTrade_Htf3_EnableEmaFilter, DayTrade_Htf1_EmaPeriod, DayTrade_Htf2_EmaPeriod, DayTrade_Htf3_EmaPeriod, DayTrade_Htf1_EmaMethod, DayTrade_Htf2_EmaMethod, DayTrade_Htf3_EmaMethod, DayTrade_Htf1_EmaPrice, DayTrade_Htf2_EmaPrice, DayTrade_Htf3_EmaPrice, DayTrade_LowVolRRMultiplier, DayTrade_HighVolRRMultiplier, DayTrade_HighVolSlAtrMultiplier);
+   InitializeStrategyContext(TrendStrategy, EnableTrendStrategy, MagicNumber_Trend, Trend_Timeframe, Trend_RiskPerEntryPercent, Trend_MaxRunningTrades, Trend_BaseTakeProfitRR, Trend_BaseSlAtrMult, Trend_MinPullbackAtrMult, Trend_EnableEmaFilter, Trend_EmaFilterPeriod, Trend_EmaFilterMethod, Trend_EmaFilterPrice, false, 0, 0, 0, false,0,0,false,false,false, Trend_EnableMultiHtfFilter, Trend_NumberOfHtfs, Trend_Htf1_Timeframe, Trend_Htf2_Timeframe, Trend_Htf3_Timeframe, Trend_Htf1_EnableEmaFilter, Trend_Htf2_EnableEmaFilter, Trend_Htf3_EnableEmaFilter, Trend_Htf1_EmaPeriod, Trend_Htf2_EmaPeriod, Trend_Htf3_EmaPeriod, Trend_Htf1_EmaMethod, Trend_Htf2_EmaMethod, Trend_Htf3_EmaMethod, Trend_Htf1_EmaPrice, Trend_Htf2_EmaPrice, Trend_Htf3_EmaPrice, Trend_LowVolRRMultiplier, Trend_HighVolRRMultiplier, Trend_HighVolSlAtrMultiplier);
+   InitializeStrategyContext(DayTradeStrategy, EnableDayTradingStrategy, MagicNumber_DayTrade, DayTrade_Timeframe, DayTrade_RiskPerEntryPercent, DayTrade_MaxRunningTrades, DayTrade_BaseTakeProfitRR, DayTrade_BaseSlAtrMult, DayTrade_MinPullbackAtrMult, DayTrade_EnableEmaFilter, DayTrade_EmaFilterPeriod, DayTrade_EmaFilterMethod, DayTrade_EmaFilterPrice, DayTrade_EnableTimeFilter, DayTrade_TradeAllowedFromHour, DayTrade_TradeAllowedToHour, DayTrade_BlockMinutesAfterMarketOpen, DayTrade_EnableNewsFilter, DayTrade_MinutesBeforeNewsStop, DayTrade_MinutesAfterNewsResume, DayTrade_FilterHighImpact, DayTrade_FilterMediumImpact, DayTrade_FilterLowImpact, DayTrade_EnableMultiHtfFilter, DayTrade_NumberOfHtfs, DayTrade_Htf1_Timeframe, DayTrade_Htf2_Timeframe, DayTrade_Htf3_Timeframe, DayTrade_Htf1_EnableEmaFilter, DayTrade_Htf2_EnableEmaFilter, DayTrade_Htf3_EnableEmaFilter, DayTrade_Htf1_EmaPeriod, DayTrade_Htf2_EmaPeriod, DayTrade_Htf3_EmaPeriod, DayTrade_Htf1_EmaMethod, DayTrade_Htf2_EmaMethod, DayTrade_Htf3_EmaMethod, DayTrade_Htf1_EmaPrice, DayTrade_Htf2_EmaPrice, DayTrade_Htf3_EmaPrice, DayTrade_LowVolRRMultiplier, DayTrade_HighVolRRMultiplier, DayTrade_HighVolSlAtrMultiplier);
    
    // --- Final Setup ---
    TimeCurrent();
@@ -325,11 +356,13 @@ int OnInit()
    ObjectsDeleteAll(0, "EA_");
    if(TrendStrategy.isEnabled) InitializeStrategyStateFromHistory(TrendStrategy);
    if(DayTradeStrategy.isEnabled) InitializeStrategyStateFromHistory(DayTradeStrategy);
+   
+   if(DayTradeStrategy.isEnabled && DayTradeStrategy.enableNewsFilter) FetchNewsData();
      
    return(INIT_SUCCEEDED);
 }
 
-void InitializeStrategyContext(StrategyContext &context, bool isEnabled, long magic, ENUM_TIMEFRAMES tf, double risk, int maxTrades, double rr, double slMult, double pbMult, bool emaEnabled, int emaPeriod, ENUM_MA_METHOD emaMethod, ENUM_APPLIED_PRICE emaPrice, bool timeFilter, int fromHour, int toHour, int blockMins, bool htfEnabled, ENUM_HTF_COUNT numHtfs, ENUM_TIMEFRAMES htf1, ENUM_TIMEFRAMES htf2, ENUM_TIMEFRAMES htf3, bool htf1Ema, bool htf2Ema, bool htf3Ema, int htf1EmaP, int htf2EmaP, int htf3EmaP, ENUM_MA_METHOD htf1EmaM, ENUM_MA_METHOD htf2EmaM, ENUM_MA_METHOD htf3EmaM, ENUM_APPLIED_PRICE htf1EmaPr, ENUM_APPLIED_PRICE htf2EmaPr, ENUM_APPLIED_PRICE htf3EmaPr, double lowVolRR, double highVolRR, double highVolSl)
+void InitializeStrategyContext(StrategyContext &context, bool isEnabled, long magic, ENUM_TIMEFRAMES tf, double risk, int maxTrades, double rr, double slMult, double pbMult, bool emaEnabled, int emaPeriod, ENUM_MA_METHOD emaMethod, ENUM_APPLIED_PRICE emaPrice, bool timeFilter, int fromHour, int toHour, int blockMins, bool newsFilter, int beforeNews, int afterNews, bool high, bool med, bool low, bool htfEnabled, ENUM_HTF_COUNT numHtfs, ENUM_TIMEFRAMES htf1, ENUM_TIMEFRAMES htf2, ENUM_TIMEFRAMES htf3, bool htf1Ema, bool htf2Ema, bool htf3Ema, int htf1EmaP, int htf2EmaP, int htf3EmaP, ENUM_MA_METHOD htf1EmaM, ENUM_MA_METHOD htf2EmaM, ENUM_MA_METHOD htf3EmaM, ENUM_APPLIED_PRICE htf1EmaPr, ENUM_APPLIED_PRICE htf2EmaPr, ENUM_APPLIED_PRICE htf3EmaPr, double lowVolRR, double highVolRR, double highVolSl)
 {
     context.isEnabled = isEnabled;
     if(!context.isEnabled) return;
@@ -354,6 +387,14 @@ void InitializeStrategyContext(StrategyContext &context, bool isEnabled, long ma
     context.tradeAllowedFromHour = fromHour;
     context.tradeAllowedToHour = toHour;
     context.blockMinutesAfterMarketOpen = blockMins;
+    
+    // News Filter
+    context.enableNewsFilter = newsFilter;
+    context.minutesBeforeNewsStop = beforeNews;
+    context.minutesAfterNewsResume = afterNews;
+    context.filterHighImpact = high;
+    context.filterMediumImpact = med;
+    context.filterLowImpact = low;
     
     // HTF
     context.enableMultiHtfFilter = htfEnabled;
@@ -417,6 +458,15 @@ void OnTick()
 {
    if(ShowDashboard) UpdateDashboard();
    if(EnableVolatilityEngine) UpdateVolatilityRegime();
+   
+   // --- Manage News ---
+   if(DayTradeStrategy.isEnabled && DayTradeStrategy.enableNewsFilter)
+   {
+      // Fetch news data periodically (e.g., every hour)
+      if(TimeCurrent() - lastNewsFetchTime >= 3600) FetchNewsData();
+      ManageNewsClosures();
+      isNewsBlockActive = IsInNewsEmbargo();
+   }
 
    CheckEquityStopLoss();
    if(EnableAdvancedManagement) ManageOpenPositions();
@@ -617,6 +667,19 @@ void UpdateDashboard(){ static datetime last_update = 0; if(TimeCurrent() - last
    int y_pos = 15, y_step = 16; DrawDashboardLabel("Title", 15, y_pos, "MAIshe (Dual Strategy)", clrWhite, 10);
    y_pos += y_step + 5;
    DrawDashboardLabel("Status", 15, y_pos, "Status: " + status_text, status_color); y_pos += y_step;
+   
+   if(DayTradeStrategy.isEnabled && DayTradeStrategy.enableNewsFilter)
+   {
+      string news_text = "News: OK";
+      color news_color = clrLimeGreen;
+      if(isNewsBlockActive)
+      {
+         news_text = "News: EMBARGO";
+         news_color = clrOrange;
+      }
+      DrawDashboardLabel("News", 15, y_pos, news_text, news_color); y_pos += y_step;
+   }
+   
    ChartRedraw(0);
 }
 void DrawDashboardLabel(string name, int x, int y, string text, color clr, int font_size=9){ string obj_name = "EA_DASH_" + name;
@@ -943,21 +1006,22 @@ bool IsValidPullbackStructure(int pivotBarShift, ENUM_TREND trendDirection, Stra
    (rates[i].close < rates[i].open) : (rates[i].close > rates[i].open); if(isCounterCandle){ consecutiveCandles++; if(consecutiveCandles >= 3) return true; } else consecutiveCandles = 0;
    } return false; }
    
-void DrawBMSLine(string prefix, datetime t1, double p1, datetime t2, double p2, string txt){ string name = prefix + "BMS_" + (string)t1;
+void DrawBMSLine(string prefix, datetime t1, double p1, datetime t2, double p2, string txt){ string name = prefix + "BMS_" + IntegerToString((long)t1);
    if(ObjectFind(0, name) < 0){ ObjectCreate(0, name, OBJ_TREND, 0, t1, p1, t2, p2); ObjectSetInteger(0, name, OBJPROP_COLOR, clrDodgerBlue); ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
    ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT); } }
-void DrawChoChLine(string prefix, datetime t1, double p1, datetime t2, double p2, string txt){ string name = prefix + "ChoCh_" + (string)t1;
+void DrawChoChLine(string prefix, datetime t1, double p1, datetime t2, double p2, string txt){ string name = prefix + "ChoCh_" + IntegerToString((long)t1);
    if(ObjectFind(0, name) < 0){ ObjectCreate(0, name, OBJ_TREND, 0, t1, p1, t2, p2); ObjectSetInteger(0, name, OBJPROP_COLOR, clrOrangeRed); ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
    ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT); } }
-void DrawHtfBMSLine(string prefix, datetime t1, double p1, datetime t2, double p2, string txt){ string name = prefix + "BMS_" + (string)t1;
+void DrawHtfBMSLine(string prefix, datetime t1, double p1, datetime t2, double p2, string txt){ string name = prefix + "BMS_" + IntegerToString((long)t1);
    if(ObjectFind(0, name) < 0){ ObjectCreate(0, name, OBJ_TREND, 0, t1, p1, t2, p2); ObjectSetInteger(0, name, OBJPROP_COLOR, clrCornflowerBlue); ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
    ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID); } }
-void DrawHtfChoChLine(string prefix, datetime t1, double p1, datetime t2, double p2, string txt){ string name = prefix + "ChoCh_" + (string)t1;
+void DrawHtfChoChLine(string prefix, datetime t1, double p1, datetime t2, double p2, string txt){ string name = prefix + "ChoCh_" + IntegerToString((long)t1);
    if(ObjectFind(0, name) < 0){ ObjectCreate(0, name, OBJ_TREND, 0, t1, p1, t2, p2); ObjectSetInteger(0, name, OBJPROP_COLOR, clrOrange); ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
    ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID); } }
    
 bool PerformPreFlightChecks(double newTradeRiskPercent, StrategyContext &context){ 
    if(!IsTradingTime(context)) return false; 
+   if(context.enableNewsFilter && isNewsBlockActive) return false;
    if(!IsSpreadOK()) return false;
    if(CountCurrentTrades(context.magicNumber) >= context.maxRunningTrades){ Print("Trade aborted for ", EnumToString(context.entryTimeframe), ": Max running trades (", context.maxRunningTrades, ") reached."); return false; } 
    if(!IsTotalRiskOK(newTradeRiskPercent)) return false;
@@ -980,17 +1044,17 @@ bool ExecutePendingOrder(ENUM_ORDER_TYPE orderType, double lot, double entry, do
    if(orderType == ORDER_TYPE_BUY_LIMIT) entry += slippage; if(orderType == ORDER_TYPE_SELL_LIMIT) entry -= slippage; } bool result = false;
    if(orderType == ORDER_TYPE_BUY_LIMIT) result = trade.BuyLimit(lot, entry, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment);
    if(orderType == ORDER_TYPE_SELL_LIMIT) result = trade.SellLimit(lot, entry, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment);
-   if(result){ Print("Pending order placed successfully for magic ", magic, ". Ticket: ", trade.ResultOrder());
-   } else { Print("Pending order failed for magic ", magic, ". Reason: ", trade.ResultComment(), " (Code: ", trade.ResultRetcode(), ")");
+   if(result){ Print("Pending order placed successfully for magic ", (string)magic, ". Ticket: ", (string)trade.ResultOrder());
+   } else { Print("Pending order failed for magic ", (string)magic, ". Reason: ", trade.ResultComment(), " (Code: ", (string)trade.ResultRetcode(), ")");
    } return result;
    }
 bool IsSpreadOK(){ double spread = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double pipSize = _Point * ( (_Digits == 3 || _Digits == 5) ? 10 : 1 );
-   double maxAllowedSpread = MaxSpreadPips * pipSize; if(spread > maxAllowedSpread){ Print("Trade aborted: Spread (", spread/_Point, " pts) exceeds max allowed (", maxAllowedSpread/_Point, " pts).");
+   double maxAllowedSpread = MaxSpreadPips * pipSize; if(spread > maxAllowedSpread){ Print("Trade aborted: Spread (", DoubleToString(spread/_Point, 1), " pts) exceeds max allowed (", DoubleToString(maxAllowedSpread/_Point, 1), " pts).");
    return false; } return true; }
 bool IsMarginSufficient(double lots, ENUM_ORDER_TYPE orderType){ double margin_required = 0;
    if(!OrderCalcMargin(orderType, _Symbol, lots, SymbolInfoDouble(_Symbol, SYMBOL_ASK), margin_required)){ Print("Could not calculate required margin. Aborting trade."); return false;
-   } if(AccountInfoDouble(ACCOUNT_MARGIN_FREE) < margin_required){ Print("Trade aborted: Insufficient free margin. Required: ", margin_required, ", Available: ", AccountInfoDouble(ACCOUNT_MARGIN_FREE)); return false;
+   } if(AccountInfoDouble(ACCOUNT_MARGIN_FREE) < margin_required){ Print("Trade aborted: Insufficient free margin. Required: ", DoubleToString(margin_required, 2), ", Available: ", DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE), 2)); return false;
    } return true; }
    
 bool IsTradingTime(StrategyContext &context){ 
@@ -1012,5 +1076,210 @@ bool IsTotalRiskOK(double newTradeRiskPercent){ if(MaxTotalRiskPercent <= 0) ret
    if(magic == MagicNumber_Trend || magic == MagicNumber_DayTrade){ double open_price = OrderGetDouble(ORDER_PRICE_OPEN); double sl = OrderGetDouble(ORDER_SL);
    double lots = OrderGetDouble(ORDER_VOLUME_INITIAL);
    if (sl != 0){ double riskAmount = MathAbs(open_price - sl) * lots * (SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE) / SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE));
-   totalRisk += (riskAmount / accountEquity) * 100.0; } } } } } if(totalRisk + newTradeRiskPercent > MaxTotalRiskPercent){ Print("Trade aborted: New trade would exceed max total risk. Current Risk: ", DoubleToString(totalRisk, 2), "%, New Trade Risk: ", DoubleToString(newTradeRiskPercent,2), "%, Limit: ", MaxTotalRiskPercent, "%");
+   totalRisk += (riskAmount / accountEquity) * 100.0; } } } } } if(totalRisk + newTradeRiskPercent > MaxTotalRiskPercent){ Print("Trade aborted: New trade would exceed max total risk. Current Risk: ", DoubleToString(totalRisk, 2), "%, New Trade Risk: ", DoubleToString(newTradeRiskPercent,2), "%, Limit: ", DoubleToString(MaxTotalRiskPercent, 2), "%");
    return false; } return true; }
+   
+//+------------------------------------------------------------------+
+//| NEWS FILTER FUNCTIONS                                            |
+//+------------------------------------------------------------------+
+void FetchNewsData()
+{
+   lastNewsFetchTime = TimeCurrent();
+   ArrayFree(UpcomingNews);
+   
+   string cookie=NULL,headers;
+   char post[],result[];
+   int res;
+   string url = DayTrade_NewsURL;
+
+   ResetLastError();
+   res = WebRequest("GET", url, NULL, NULL, 5000, post, 0, result, headers);
+
+   if(res == -1)
+   {
+      Print("Error in WebRequest. Error code: ", GetLastError());
+      return;
+   }
+   
+   string html_content = CharArrayToString(result);
+   ParseNewsHTML(html_content);
+}
+
+void ParseNewsHTML(string html)
+{
+   int pos = 0;
+   datetime eventDate = 0;
+   long gmt_offset = TimeGMTOffset();
+
+   while((pos = StringFind(html, "calendar__row", pos)) != -1)
+   {
+      string row_html = StringSubstr(html, pos, StringFind(html, "</tr>", pos) - pos);
+      
+      // Get Date
+      int date_pos = StringFind(row_html, "calendar__date");
+      if(date_pos != -1)
+      {
+         string date_str_full = GetSubstring(row_html, "calendar__date", ">", "<");
+         string date_parts[];
+         StringSplit(date_str_full, ' ', date_parts);
+         if(ArraySize(date_parts) >= 3)
+         {
+            MqlDateTime dt;
+            dt.mon = MonthToInt(date_parts[1]);
+            dt.day = (int)StringToInteger(date_parts[2]);
+            
+            MqlDateTime current_server_time;
+            TimeToStruct(TimeCurrent(), current_server_time);
+            dt.year = current_server_time.year; // Assume current year based on server time
+            
+            eventDate = StructToTime(dt);
+         }
+      }
+
+      if(eventDate == 0) 
+      {
+         pos++;
+         continue;
+      }
+
+      // Get Time
+      string time_str = GetSubstring(row_html, "calendar__time", ">", "<");
+      if(StringFind(time_str, ":") == -1) // Skip "All Day" or invalid times
+      {
+         pos++;
+         continue;
+      }
+      
+      string time_parts[];
+      StringSplit(time_str, ':', time_parts);
+      int hour = (int)StringToInteger(time_parts[0]);
+      int min = (int)StringToInteger(StringSubstr(time_parts[1],0,2));
+      if(StringFind(StringToUpper(time_parts[1]), "PM") > -1 && hour != 12) hour += 12;
+      if(StringFind(StringToUpper(time_parts[1]), "AM") > -1 && hour == 12) hour = 0;
+
+      MqlDateTime dt;
+      TimeToStruct(eventDate, dt);
+      dt.hour = hour;
+      dt.min = min;
+      
+      datetime event_gmt_time = StructToTime(dt);
+      datetime event_server_time = (datetime)(event_gmt_time + gmt_offset);
+
+      // Get Currency
+      string currency = GetSubstring(row_html, "calendar__currency", ">", "<");
+
+      // Get Impact
+      ENUM_IMPACT_LEVEL impact = IMPACT_LOW;
+      if(StringFind(row_html, "impact--high") != -1) impact = IMPACT_HIGH;
+      else if(StringFind(row_html, "impact--medium") != -1) impact = IMPACT_MEDIUM;
+      else if(StringFind(row_html, "impact--low") != -1) impact = IMPACT_LOW;
+
+      // Get Title
+      string title = GetSubstring(row_html, "calendar__event-title", ">", "<");
+
+      // Add to array
+      int size = ArraySize(UpcomingNews);
+      ArrayResize(UpcomingNews, size + 1);
+      UpcomingNews[size].time = event_server_time;
+      UpcomingNews[size].currency = currency;
+      UpcomingNews[size].impact = impact;
+      UpcomingNews[size].title = title;
+      
+      pos++;
+   }
+}
+
+string GetSubstring(string source, string start_marker, string open_tag, string close_tag)
+{
+    int start_pos = StringFind(source, start_marker);
+    if(start_pos == -1) return "";
+    
+    int open_pos = StringFind(source, open_tag, start_pos);
+    if(open_pos == -1) return "";
+    
+    int close_pos = StringFind(source, close_tag, open_pos + 1);
+    if(close_pos == -1) return "";
+    
+    return StringSubstr(source, open_pos + 1, close_pos - open_pos - 1);
+}
+
+int MonthToInt(string month)
+{
+    month = StringToUpper(StringSubstr(month, 0, 3));
+    if(month == "JAN") return 1; if(month == "FEB") return 2;
+    if(month == "MAR") return 3; if(month == "APR") return 4;
+    if(month == "MAY") return 5; if(month == "JUN") return 6;
+    if(month == "JUL") return 7; if(month == "AUG") return 8;
+    if(month == "SEP") return 9; if(month == "OCT") return 10;
+    if(month == "NOV") return 11; if(month == "DEC") return 12;
+    return 0;
+}
+
+
+bool IsInNewsEmbargo()
+{
+   string base_currency = SymbolInfoString(_Symbol, SYMBOL_CURRENCY_BASE);
+   string quote_currency = SymbolInfoString(_Symbol, SYMBOL_CURRENCY_PROFIT);
+
+   for(int i = 0; i < ArraySize(UpcomingNews); i++)
+   {
+      // Check if currency matches
+      if(UpcomingNews[i].currency != base_currency && UpcomingNews[i].currency != quote_currency) continue;
+      
+      // Check if impact level is one we care about
+      bool impact_match = false;
+      if(DayTradeStrategy.filterHighImpact && UpcomingNews[i].impact == IMPACT_HIGH) impact_match = true;
+      if(DayTradeStrategy.filterMediumImpact && UpcomingNews[i].impact == IMPACT_MEDIUM) impact_match = true;
+      if(DayTradeStrategy.filterLowImpact && UpcomingNews[i].impact == IMPACT_LOW) impact_match = true;
+      if(!impact_match) continue;
+      
+      long seconds_to_news = (long)UpcomingNews[i].time - (long)TimeCurrent();
+      
+      // Check if we are in the before/after window
+      if(seconds_to_news > -(DayTradeStrategy.minutesAfterNewsResume * 60) && 
+         seconds_to_news < (DayTradeStrategy.minutesBeforeNewsStop * 60))
+      {
+         return true; // We are inside the news embargo period
+      }
+   }
+   return false;
+}
+
+void ManageNewsClosures()
+{
+   string base_currency = SymbolInfoString(_Symbol, SYMBOL_CURRENCY_BASE);
+   string quote_currency = SymbolInfoString(_Symbol, SYMBOL_CURRENCY_PROFIT);
+
+   for(int i = 0; i < ArraySize(UpcomingNews); i++)
+   {
+      // Check if currency matches
+      if(UpcomingNews[i].currency != base_currency && UpcomingNews[i].currency != quote_currency) continue;
+
+      // Check impact level
+      bool impact_match = false;
+      if(DayTradeStrategy.filterHighImpact && UpcomingNews[i].impact == IMPACT_HIGH) impact_match = true;
+      if(DayTradeStrategy.filterMediumImpact && UpcomingNews[i].impact == IMPACT_MEDIUM) impact_match = true;
+      if(DayTradeStrategy.filterLowImpact && UpcomingNews[i].impact == IMPACT_LOW) impact_match = true;
+      if(!impact_match) continue;
+      
+      long seconds_to_news = (long)UpcomingNews[i].time - (long)TimeCurrent();
+      
+      // If news is within the "close before" window, close DayTrade positions
+      if(seconds_to_news > 0 && seconds_to_news < (DayTradeStrategy.minutesBeforeNewsStop * 60))
+      {
+         for(int j = PositionsTotal() - 1; j >= 0; j--)
+         {
+            ulong ticket = PositionGetTicket(j);
+            if(PositionSelectByTicket(ticket))
+            {
+               if(PositionGetInteger(POSITION_MAGIC) == MagicNumber_DayTrade)
+               {
+                  Print("Closing position #", (string)ticket, " due to upcoming news event: ", UpcomingNews[i].title);
+                  trade.PositionClose(ticket);
+               }
+            }
+         }
+      }
+   }
+}
+
